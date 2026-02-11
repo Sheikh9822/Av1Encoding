@@ -1,0 +1,42 @@
+name: Encode and Send
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Direct Index Link'
+        required: true
+      custom_name:
+        description: 'Formatted Name from HF Bot'
+        required: true
+
+jobs:
+  encode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🛠️ Install FFmpeg & Python Deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install pyrogram tgcrypto
+
+      - name: 📥 Download from Index
+        run: |
+          curl -L -o "source.mkv" "${{ github.event.inputs.video_url }}"
+
+      - name: ⚙️ SVT-AV1 Encode
+        run: |
+          # Preset 8 and CRF 40 targets roughly 50MB for 24min anime
+          ffmpeg -i "source.mkv" -c:v libsvtav1 -preset 8 -crf 40 \
+          -svtav1-params tune=0:film-grain=0:keyint=480 -pix_fmt yuv420p10le \
+          -s 1920x1080 -c:a libopus -b:a 48k "${{ github.event.inputs.custom_name }}.mkv"
+
+      - name: 📤 Upload via UserBot
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
+        run: python uploader.py
+        
