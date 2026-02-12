@@ -1,4 +1,9 @@
-import asyncio
+, "quiet", "-print_format", "json", "-show_streams", "-show_format", SOURCE]
+    res = json.loads(subprocess.check_output(cmd).decode())
+    video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
+    duration = float(res['format'].get('duration', 0))
+    height = int(video_stream.get('height', 0))
+    fps_raw = video_import asyncio
 import os
 import subprocess
 import time
@@ -66,11 +71,10 @@ def select_params(height):
 last_up_update = 0
 
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
-    """Callback to update the UI during the Telegram upload phase."""
+    [span_1](start_span)"""Updates UI during the Telegram upload phase[span_1](end_span)."""
     global last_up_update
     now = time.time()
     
-    # Update UI only every 10 seconds to avoid Telegram rate limits
     if now - last_up_update < 10:
         return
         
@@ -128,10 +132,7 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        # Initial status
         status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
-        
-        # Start grid generation in background
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
@@ -148,17 +149,14 @@ async def main():
 
         with open(LOG_FILE, "w") as f_log:
             PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-            
             for line in PROCESS.stdout:
                 f_log.write(line)
                 if CANCELLED: break
-                
                 if "out_time_ms" in line:
                     try:
                         curr_sec = int(line.split("=")[1]) / 1_000_000
                         percent = (curr_sec / duration) * 100
                         elapsed = time.time() - start_time
-                        
                         speed = curr_sec / elapsed if elapsed > 0 else 0
                         fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
                         eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
@@ -166,7 +164,6 @@ async def main():
                         if time.time() - last_update > 20:
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
-                            
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
@@ -196,7 +193,14 @@ async def main():
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # Prepare for upload
+        # --- FIX MEDIAINFO METADATA ---
+        await app.edit_message_text(chat_id, status.id, "🛠️ <b>Finalizing Metadata Headers...</b>", parse_mode=enums.ParseMode.HTML)
+        fixed_file = "fixed_" + file_name
+        remux_cmd = ["ffmpeg", "-i", file_name, "-c", "copy", "-map_metadata", "0", fixed_file, "-y"]
+        subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.remove(file_name)
+        os.rename(fixed_file, file_name)
+
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
@@ -216,7 +220,6 @@ async def main():
             f"└ <b>Audio:</b> Opus @ {u_bitrate}"
         )
 
-        # [span_1](start_span)Start Upload with visual progress[span_1](end_span)
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
@@ -226,11 +229,8 @@ async def main():
             progress_args=(app, chat_id, status, file_name)
         )
         
-        # Cleanup
-        try:
-            await status.delete()
-        except:
-            pass
+        try: await status.delete()
+        except: pass
 
         for f in [SOURCE, file_name, LOG_FILE]:
             if os.path.exists(f): os.remove(f)
