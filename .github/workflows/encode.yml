@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct Index Link'
+        description: "Direct Index Link"
         required: true
       custom_name:
-        description: 'Formatted Name from HF Bot'
+        description: "Formatted Name from HF Bot"
         required: true
 
 jobs:
@@ -25,19 +25,18 @@ jobs:
           sudo apt-get install -y ffmpeg python3-pip
           pip install pyrogram tgcrypto
 
-      # ----------------------------
-      # SAFE URL DOWNLOAD (Production Grade)
-      # ----------------------------
       - name: 📥 Download Source (Safe URL Encode)
+        env:
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
-          python3 - <<EOF
+          python3 << 'EOF'
 import urllib.parse
 import subprocess
+import os
 
-url = "${{ github.event.inputs.video_url }}"
+url = os.environ["VIDEO_URL"]
 
 parsed = urllib.parse.urlsplit(url)
-
 encoded_path = urllib.parse.quote(parsed.path)
 encoded_query = urllib.parse.quote_plus(parsed.query, safe="=&")
 
@@ -62,10 +61,9 @@ EOF
           ls -lh source.mkv
           ffprobe -hide_banner source.mkv
 
-      # ----------------------------
-      # AV1 ENCODE (Balanced Quality/Size)
-      # ----------------------------
       - name: ⚙️ SVT-AV1 Encode
+        env:
+          OUTPUT_NAME: ${{ github.event.inputs.custom_name }}
         run: |
           ffmpeg -i source.mkv \
           -map 0:v -map 0:a? \
@@ -77,15 +75,14 @@ EOF
           -vf "scale=1920:1080:flags=lanczos" \
           -c:a libopus -b:a 48k \
           -movflags +faststart \
-          "${{ github.event.inputs.custom_name }}.mkv"
+          "$OUTPUT_NAME.mkv"
 
       - name: 📊 Show Encoded File Info
+        env:
+          OUTPUT_NAME: ${{ github.event.inputs.custom_name }}
         run: |
-          ls -lh "${{ github.event.inputs.custom_name }}.mkv"
+          ls -lh "$OUTPUT_NAME.mkv"
 
-      # ----------------------------
-      # TELEGRAM UPLOAD
-      # ----------------------------
       - name: 📤 Upload via UserBot
         env:
           API_ID: ${{ secrets.TG_API_ID }}
