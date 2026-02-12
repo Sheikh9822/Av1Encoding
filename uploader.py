@@ -57,7 +57,7 @@ def get_ssim(output_file):
 
 def select_params(height):
     if height >= 2000: return 32, 10
-    elif height >= 1000: return 28, 8
+    elif height >= 1000: return 42, 6
     elif height >= 700: return 24, 6
     return 22, 4
 
