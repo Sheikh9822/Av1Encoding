@@ -1,9 +1,4 @@
-, "quiet", "-print_format", "json", "-show_streams", "-show_format", SOURCE]
-    res = json.loads(subprocess.check_output(cmd).decode())
-    video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
-    duration = float(res['format'].get('duration', 0))
-    height = int(video_stream.get('height', 0))
-    fps_raw = video_import asyncio
+import asyncio
 import os
 import subprocess
 import time
@@ -71,7 +66,7 @@ def select_params(height):
 last_up_update = 0
 
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
-    [span_1](start_span)"""Updates UI during the Telegram upload phase[span_1](end_span)."""
+    """Callback to update the UI during the Telegram upload phase."""
     global last_up_update
     now = time.time()
     
@@ -193,13 +188,14 @@ async def main():
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # --- FIX MEDIAINFO METADATA ---
-        await app.edit_message_text(chat_id, status.id, "🛠️ <b>Finalizing Metadata Headers...</b>", parse_mode=enums.ParseMode.HTML)
-        fixed_file = "fixed_" + file_name
+        # --- FIX MEDIAINFO METADATA (REMUX) ---
+        await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
+        fixed_file = f"FIXED_{file_name}"
         remux_cmd = ["ffmpeg", "-i", file_name, "-c", "copy", "-map_metadata", "0", fixed_file, "-y"]
         subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.remove(file_name)
-        os.rename(fixed_file, file_name)
+        if os.path.exists(fixed_file):
+            os.remove(file_name)
+            os.rename(fixed_file, file_name)
 
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
@@ -229,8 +225,10 @@ async def main():
             progress_args=(app, chat_id, status, file_name)
         )
         
-        try: await status.delete()
-        except: pass
+        try:
+            await status.delete()
+        except:
+            pass
 
         for f in [SOURCE, file_name, LOG_FILE]:
             if os.path.exists(f): os.remove(f)
