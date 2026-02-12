@@ -4,30 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct Link'
+        description: 'Direct Link to Video'
         required: true
       custom_name:
-        description: 'Output Name'
+        description: 'Output Filename (without extension)'
         required: true
       res_choice:
-        description: 'Resolution (1080, 720, 480) - Empty for original'
+        description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
         required: false
       custom_crf:
-        description: 'CRF (Empty for auto)'
+        description: 'CRF (Default: 28)'
+        default: '28'
         required: false
       custom_preset:
-        description: 'Preset (Empty for auto)'
+        description: 'SVT-AV1 Preset (Default: 8)'
+        default: '8'
         required: false
       audio_mode:
-        description: 'Audio: (opus / copy)'
+        description: 'Audio: opus or copy'
         default: 'opus'
         required: false
       audio_bitrate:
-        description: 'Opus Bitrate (e.g., 128k, 160k, 192k)'
+        description: 'Opus Bitrate (128k, 160k, 192k)'
         default: '128k'
         required: false
       run_vmaf:
-        description: 'Run Quality Check? (true/false)'
+        description: 'Calculate Quality Score? (true/false)'
         default: 'true'
         required: false
 
@@ -42,13 +44,13 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-      - name: 🛠 Deps
+      - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install -r requirements.txt
-      - name: 📥 Download
+      - name: 📥 Download Source
         run: curl --globoff -L -o "source.mkv" "${{ github.event.inputs.video_url }}"
-      - name: 🚀 Run
+      - name: 🚀 Execute Sci-Fi Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
