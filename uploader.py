@@ -30,14 +30,17 @@ def get_video_info():
     return duration, height, is_hdr, total_frames
 
 def generate_progress_bar(percentage):
+    """Creates a 15-segment Sci-Fi progress bar using ▰ and ▱."""
     total_segments = 15
     completed = int((max(0, min(100, percentage)) / 100) * total_segments)
     return "[" + "▰" * completed + "▱" * (total_segments - completed) + "]"
 
 def format_time(seconds):
+    """Formats seconds into HH:MM:SS."""
     return str(timedelta(seconds=int(seconds))).zfill(8)
 
 async def async_generate_grid(duration):
+    """Generates 3x3 thumbnail grid in background."""
     loop = asyncio.get_event_loop()
     def sync_grid():
         interval = duration / 10
@@ -47,6 +50,7 @@ async def async_generate_grid(duration):
     await loop.run_in_executor(None, sync_grid)
 
 def get_ssim(output_file):
+    """Calculates Structural Similarity Index."""
     cmd = ["ffmpeg", "-i", output_file, "-i", SOURCE, "-filter_complex", "ssim", "-f", "null", "-"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -80,6 +84,7 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
+    # Robust Params Logic
     def_crf, def_preset = select_params(height)
     final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
     final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
@@ -92,9 +97,10 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        # Fixed Parse Mode here
-        status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Connecting to Neural Link...</b>", parse_mode=enums.ParseMode.HTML)
-
+        # Initial status
+        status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
+        
+        # Start grid generation in background
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
@@ -102,9 +108,8 @@ async def main():
             *scale_filter,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), "-preset", str(final_preset),
-            "-svtav1-params", f"tune=0:aq-mode=2{hdr_params}",
+            "-svtav1-params", f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1{hdr_params}",
             *audio_cmd, "-c:s", "copy",
-            "-metadata", "comment=Encoded by Gemini Sci-Fi Bot",
             "-progress", "pipe:1", "-nostats", "-y", file_name
         ]
 
@@ -140,22 +145,22 @@ async def main():
                                 f"│                                    \n"
                                 f"│ 📊 PROG: {bar} {percent:.1f}% \n"
                                 f"│                                    \n"
+                                f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
                                 f"│ 🎞️ VIDEO: {res_label} | 10-bit | {hdr_label}\n"
                                 f"│ 🔊 AUDIO: Opus @ {u_bitrate}\n"
                                 f"│ 📦 SIZE: {size:.2f} MB\n"
                                 f"│                                    \n"
                                 f"└────────────────────────────────────┘</code>"
                             )
-                            # Fixed Parse Mode here
                             await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
                             last_update = time.time()
                     except: continue
 
         PROCESS.wait()
-        await grid_task 
+        await grid_task # Wait for grid to finish if it hasn't
 
         if PROCESS.returncode != 0:
-            await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Overload</b>", parse_mode=enums.ParseMode.HTML)
+            await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
@@ -176,4 +181,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
