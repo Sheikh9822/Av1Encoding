@@ -29,7 +29,8 @@ def generate_screenshot(duration):
         "ffmpeg", "-ss", str(ss_time), "-i", SOURCE,
         "-frames:v", "1", "-q:v", "2", SCREENSHOT, "-y"
     ]
-    subprocess.run(cmd, stdout=subprocess.DEV_NULL, stderr=subprocess.DEV_NULL)
+    # Fixed DEVNULL typo here
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def select_params(height):
     if height >= 2000: return 32, 10
@@ -62,8 +63,12 @@ async def main():
     u_crf = os.getenv("USER_CRF")
     u_preset = os.getenv("USER_PRESET")
 
-    duration = get_duration()
-    height = get_height()
+    try:
+        duration = get_duration()
+        height = get_height()
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
     
     def_crf, def_preset = select_params(height)
     final_crf = u_crf if u_crf else def_crf
@@ -102,16 +107,19 @@ async def main():
         for line in PROCESS.stdout:
             if CANCELLED: break
             if "out_time_ms" in line:
-                out_time = int(line.split("=")[1]) / 1_000_000
-                percent = (out_time / duration) * 100
-                elapsed = time.time() - start_time
-                speed = out_time / elapsed if elapsed > 0 else 0
-                
-                if time.time() - last_update > 15:
-                    size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
-                    msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
-                    await safe_edit(chat_id, status.id, msg, app)
-                    last_update = time.time()
+                try:
+                    out_time = int(line.split("=")[1]) / 1_000_000
+                    percent = (out_time / duration) * 100
+                    elapsed = time.time() - start_time
+                    speed = out_time / elapsed if elapsed > 0 else 0
+                    
+                    if time.time() - last_update > 15:
+                        size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
+                        msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
+                        await safe_edit(chat_id, status.id, msg, app)
+                        last_update = time.time()
+                except:
+                    continue
 
         PROCESS.wait()
         if CANCELLED: return
@@ -120,8 +128,11 @@ async def main():
 
         # Send Screenshot first
         if os.path.exists(SCREENSHOT):
-            await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview:** `{file_name}`")
-            os.remove(SCREENSHOT)
+            try:
+                await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview:** `{file_name}`")
+                os.remove(SCREENSHOT)
+            except Exception as e:
+                print(f"Failed to send screenshot: {e}")
 
         async def upload_progress(current, total):
             nonlocal last_update
@@ -142,3 +153,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
