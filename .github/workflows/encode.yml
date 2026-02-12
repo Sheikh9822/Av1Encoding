@@ -13,11 +13,11 @@ on:
         description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
         required: false
       custom_crf:
-        description: 'CRF (Default: 28)'
+        description: 'CRF (Default: 42)'
         default: '28'
         required: false
       custom_preset:
-        description: 'SVT-AV1 Preset (Default: 8)'
+        description: 'SVT-AV1 Preset (Default: 6)'
         default: '8'
         required: false
       audio_mode:
