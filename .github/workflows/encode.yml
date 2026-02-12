@@ -4,129 +4,37 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: "Direct Index Link"
+        description: 'Direct Index Link'
         required: true
       custom_name:
-        description: "File Name (without extension)"
+        description: 'Formatted Name from HF Bot'
         required: true
 
 jobs:
   encode:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: 📂 Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 🛠️ Install Dependencies
+      - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          pip install pyrogram tgcrypto requests
+          sudo apt-get install -y ffmpeg
+          pip install pyrogram tgcrypto
 
-      - name: 📥 Download Source (Universal Safe Downloader)
-        env:
-          VIDEO_URL: ${{ github.event.inputs.video_url }}
+      - name: 📥 Download Source
         run: |
-          python3 - << 'PYTHON'
-          import os
-          import requests
-          from urllib.parse import urlparse
-          from pathlib import Path
+          curl -L --retry 5 --retry-delay 5 \
+          -o "source.mkv" \
+          "${{ github.event.inputs.video_url }}"
 
-          url = os.environ["VIDEO_URL"]
-
-          headers = {
-              "User-Agent": "Mozilla/5.0",
-              "Accept": "*/*",
-              "Connection": "keep-alive"
-          }
-
-          print(f"Downloading: {url}")
-
-          with requests.get(
-              url,
-              headers=headers,
-              stream=True,
-              allow_redirects=True,
-              timeout=(10, 300)
-          ) as r:
-              r.raise_for_status()
-
-              # Detect filename from header if available
-              filename = None
-              if "content-disposition" in r.headers:
-                  import re
-                  match = re.findall('filename="?(.+)"?', r.headers["content-disposition"])
-                  if match:
-                      filename = match[0]
-
-              # Fallback to URL name
-              if not filename:
-                  parsed = urlparse(url)
-                  filename = Path(parsed.path).name or "source.mkv"
-
-              print("Saving as: source.mkv")
-
-              total = 0
-              with open("source.mkv", "wb") as f:
-                  for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
-                      if chunk:
-                          f.write(chunk)
-                          total += len(chunk)
-                          print(f"Downloaded {total // (1024*1024)} MB", end="\r")
-
-          print("\nDownload complete.")
-          PYTHON
-
-      - name: ⚙️ SVT-AV1 Encode
-        env:
-          OUTPUT_NAME: ${{ github.event.inputs.custom_name }}
-        run: |
-          ffmpeg -i source.mkv \
-          -map 0:v -map 0:a? \
-          -c:v libsvtav1 \
-          -preset 9 \
-          -crf 46 \
-          -pix_fmt yuv420p10le \
-          -svtav1-params "tune=0:film-grain=0:keyint=480" \
-          -vf "scale=1920:1080:flags=lanczos" \
-          -c:a libopus -b:a 64k \
-          -movflags +faststart \
-          "$OUTPUT_NAME.mkv"
-
-      - name: 📤 Upload via UserBot
+      - name: 🚀 Encode + Upload with Telegram Progress
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
-        run: |
-          cat << 'EOF' > uploader.py
-          import os
-          import asyncio
-          from pyrogram import Client
-
-          async def main():
-              api_id = int(os.environ["API_ID"])
-              api_hash = os.environ["API_HASH"]
-              bot_token = os.environ["BOT_TOKEN"]
-              chat_id = int(os.environ["CHAT_ID"])
-              file_name = os.environ["FILE_NAME"]
-
-              print(f"Uploading {file_name}...")
-
-              async with Client("bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-                  await app.send_document(
-                      chat_id=chat_id,
-                      document=file_name,
-                      caption=f"✅ Encoded: `{file_name}`"
-                  )
-
-              print("Upload Complete!")
-
-          asyncio.run(main())
-          EOF
-
-          python3 uploader.py
+        run: python uploader.py
