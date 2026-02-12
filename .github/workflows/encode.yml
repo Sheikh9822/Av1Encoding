@@ -7,13 +7,12 @@ on:
         description: "Direct Index Link"
         required: true
       custom_name:
-        description: "Formatted Name from HF Bot"
+        description: "File Name (without extension)"
         required: true
 
 jobs:
   encode:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
 
     steps:
       - name: 📂 Checkout
@@ -25,44 +24,23 @@ jobs:
           sudo apt-get install -y ffmpeg python3-pip
           pip install pyrogram tgcrypto
 
-      - name: 📥 Download Source (Safe URL Encode)
+      - name: 📥 Download Source
         env:
           VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
-          python3 << 'EOF'
-import urllib.parse
-import subprocess
-import os
-
-url = os.environ["VIDEO_URL"]
-
-parsed = urllib.parse.urlsplit(url)
-encoded_path = urllib.parse.quote(parsed.path)
-encoded_query = urllib.parse.quote_plus(parsed.query, safe="=&")
-
-safe_url = urllib.parse.urlunsplit((
-    parsed.scheme,
-    parsed.netloc,
-    encoded_path,
-    encoded_query,
-    parsed.fragment
-))
-
-print("Final Encoded URL:", safe_url)
-
-subprocess.run(
-    ["curl", "-L", "--fail", "--retry", "3", "-o", "source.mkv", safe_url],
-    check=True
-)
-EOF
-
-      - name: 📊 Show Source File Info
-        run: |
-          ls -lh source.mkv
-          ffprobe -hide_banner source.mkv
+          # Use Python to safely handle URL encoding and download
+          python3 -c "
+          import urllib.parse, subprocess, os
+          url = os.environ['VIDEO_URL']
+          parsed = urllib.parse.urlsplit(url)
+          safe_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, urllib.parse.quote(parsed.path), urllib.parse.quote(parsed.query, safe='=&'), parsed.fragment))
+          print(f'Downloading: {safe_url}')
+          subprocess.run(['curl', '-L', '--fail', '--retry', '3', '-o', 'source.mkv', safe_url], check=True)
+          "
 
       - name: ⚙️ SVT-AV1 Encode
         env:
+          # Use Env var to handle spaces in names safely
           OUTPUT_NAME: ${{ github.event.inputs.custom_name }}
         run: |
           ffmpeg -i source.mkv \
@@ -71,17 +49,11 @@ EOF
           -preset 8 \
           -crf 40 \
           -pix_fmt yuv420p10le \
-          -svtav1-params tune=0:film-grain=0:keyint=480 \
+          -svtav1-params "tune=0:film-grain=0:keyint=480" \
           -vf "scale=1920:1080:flags=lanczos" \
-          -c:a libopus -b:a 48k \
+          -c:a libopus -b:a 64k \
           -movflags +faststart \
           "$OUTPUT_NAME.mkv"
-
-      - name: 📊 Show Encoded File Info
-        env:
-          OUTPUT_NAME: ${{ github.event.inputs.custom_name }}
-        run: |
-          ls -lh "$OUTPUT_NAME.mkv"
 
       - name: 📤 Upload via UserBot
         env:
@@ -90,4 +62,31 @@ EOF
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
-        run: python uploader.py
+        run: |
+          # Create the uploader script on the fly
+          cat << 'EOF' > uploader.py
+          import os
+          import asyncio
+          from pyrogram import Client
+
+          async def main():
+              api_id = os.environ["API_ID"]
+              api_hash = os.environ["API_HASH"]
+              bot_token = os.environ["BOT_TOKEN"]
+              chat_id = int(os.environ["CHAT_ID"])
+              file_name = os.environ["FILE_NAME"]
+
+              print(f"Uploading {file_name}...")
+              
+              async with Client("bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+                  await app.send_document(
+                      chat_id=chat_id,
+                      document=file_name,
+                      caption=f"✅ Encoded: `{file_name}`"
+                  )
+                  print("Upload Complete!")
+
+          asyncio.run(main())
+          EOF
+          
+          python3 uploader.py
