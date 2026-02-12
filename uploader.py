@@ -35,7 +35,7 @@ def select_crf(height):
     if height >= 2000:
         return 30, 8
     elif height >= 1000:
-        return 28, 8
+        return 50, 3
     elif height >= 700:
         return 27, 8
     elif height >= 480:
