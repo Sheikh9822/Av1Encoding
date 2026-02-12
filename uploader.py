@@ -3,7 +3,6 @@ import os
 import subprocess
 import time
 import signal
-import sys
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
@@ -24,15 +23,20 @@ def get_height():
     return int(subprocess.check_output(cmd).decode().strip())
 
 def generate_screenshot(duration):
+    """Captures a frame from the middle of the video."""
     ss_time = duration / 2
-    cmd = ["ffmpeg", "-ss", str(ss_time), "-i", SOURCE, "-frames:v", "1", "-q:v", "2", SCREENSHOT, "-y"]
+    cmd = [
+        "ffmpeg", "-ss", str(ss_time), "-i", SOURCE,
+        "-frames:v", "1", "-q:v", "2", SCREENSHOT, "-y"
+    ]
+    # Fixed DEVNULL typo here
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def select_params(height):
-    # Default fallbacks if user doesn't provide inputs
     if height >= 2000: return 32, 10
     elif height >= 1000: return 28, 8
-    else: return 24, 6
+    elif height >= 700: return 24, 6
+    else: return 22, 4
 
 # ---------- UTILS ----------
 
@@ -59,64 +63,76 @@ async def main():
     u_crf = os.getenv("USER_CRF")
     u_preset = os.getenv("USER_PRESET")
 
-    duration = get_duration()
-    height = get_height()
+    try:
+        duration = get_duration()
+        height = get_height()
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
     
-    # Target size: 256KB (with 10% buffer for container overhead)
-    # Bitrate (bps) = (Size in Bytes * 8) / Duration
-    target_size_bytes = 256 * 1024
-    calc_bitrate = int((target_size_bytes * 8 * 0.9) / duration)
-    
-    # Use user Preset/CRF or our defaults
-    _, def_preset = select_params(height)
+    def_crf, def_preset = select_params(height)
+    final_crf = u_crf if u_crf else def_crf
     final_preset = u_preset if u_preset else def_preset
+    
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
 
-        status = await app.send_message(chat_id, f"🎬 **Encoding Logic:** 2-Pass Bitrate Control\n🎯 **Target Size:** 256 KB\n📉 **Bitrate:** {calc_bitrate // 1000} kbps")
+        @app.on_message(filters.command("cancel"))
+        async def cancel_handler(client, message):
+            global CANCELLED, PROCESS
+            CANCELLED = True
+            if PROCESS: PROCESS.send_signal(signal.SIGINT)
+            await message.reply("❌ **Encoding Terminated.**")
 
+        status = await app.send_message(chat_id, f"🎬 **Encoding Started**\nOutput: `{file_name}`\nCRF: {final_crf} | Preset: {final_preset}")
+
+        # Capture screenshot from source
         generate_screenshot(duration)
 
-        # --- PASS 1 ---
-        await safe_edit(chat_id, status.id, "📊 **Running Analysis Pass...**", app)
-        pass1 = [
-            "ffmpeg", "-i", SOURCE, "-map", "0:v:0", *scale_filter,
-            "-c:v", "libsvtav1", "-preset", str(final_preset),
-            "-svtav1-params", f"rc=1:tbr={calc_bitrate}:pass=1",
-            "-an", "-f", "null", "/dev/null", "-y"
-        ]
-        subprocess.run(pass1, check=True)
-
-        # --- PASS 2 ---
         start_time = time.time()
-        pass2 = [
-            "ffmpeg", "-i", SOURCE, "-map", "0", *scale_filter,
-            "-c:v", "libsvtav1", "-preset", str(final_preset),
-            "-svtav1-params", f"rc=1:tbr={calc_bitrate}:pass=2",
-            "-c:a", "libopus", "-b:a", "32k", # Low bitrate audio to fit size
-            "-c:s", "copy", "-progress", "pipe:1", "-nostats", "-y", file_name
+        cmd = [
+            "ffmpeg", "-i", SOURCE, "-map", "0",
+            *scale_filter,
+            "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
+            "-crf", str(final_crf), "-preset", str(final_preset),
+            "-svtav1-params", "tune=0:aq-mode=2",
+            "-c:a", "libopus", "-b:a", "128k", "-c:s", "copy",
+            "-map_metadata", "0", "-progress", "pipe:1", "-nostats", "-y", file_name
         ]
 
-        PROCESS = subprocess.Popen(pass2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        
+        PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         last_update = 0
+
         for line in PROCESS.stdout:
+            if CANCELLED: break
             if "out_time_ms" in line:
-                out_time = int(line.split("=")[1]) / 1_000_000
-                percent = (out_time / duration) * 100
-                if time.time() - last_update > 15:
-                    await safe_edit(chat_id, status.id, f"🎬 **Encoding Pass 2:** `{percent:.2f}%`", app)
-                    last_update = time.time()
+                try:
+                    out_time = int(line.split("=")[1]) / 1_000_000
+                    percent = (out_time / duration) * 100
+                    elapsed = time.time() - start_time
+                    speed = out_time / elapsed if elapsed > 0 else 0
+                    
+                    if time.time() - last_update > 15:
+                        size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
+                        msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
+                        await safe_edit(chat_id, status.id, msg, app)
+                        last_update = time.time()
+                except:
+                    continue
 
         PROCESS.wait()
+        if CANCELLED: return
 
-        # --- UPLOAD ---
-        await safe_edit(chat_id, status.id, "✅ **Target Size Met!**\n📤 *Uploading...*", app)
-        
+        await safe_edit(chat_id, status.id, "✅ **Encode Finished!**\n📤 *Uploading...*", app)
+
+        # Send Screenshot first
         if os.path.exists(SCREENSHOT):
-            await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 Preview: `{file_name}`")
-            os.remove(SCREENSHOT)
+            try:
+                await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview:** `{file_name}`")
+                os.remove(SCREENSHOT)
+            except Exception as e:
+                print(f"Failed to send screenshot: {e}")
 
         async def upload_progress(current, total):
             nonlocal last_update
@@ -127,13 +143,13 @@ async def main():
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
-            caption=f"🏁 **AV1 Compressed**\n📄 `{file_name}`\n📦 Size: {os.path.getsize(file_name)/1024:.2f} KB",
+            caption=f"✅ **AV1 Done**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | P: {final_preset}",
             progress=upload_progress
         )
         
-        for f in [SOURCE, file_name, "svtav1_2pass.log"]: # Cleanup
+        for f in [SOURCE, file_name]:
             if os.path.exists(f): os.remove(f)
-        await safe_edit(chat_id, status.id, "🎉 **Done!**", app)
+        await safe_edit(chat_id, status.id, "🎉 **Task Successfully Completed!**", app)
 
 if __name__ == "__main__":
     asyncio.run(main())
