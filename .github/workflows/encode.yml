@@ -21,16 +21,28 @@ jobs:
       - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg curl
           pip install pyrogram tgcrypto
 
-      - name: 📥 Download Source
+      - name: 📥 Download Source (Glob Disabled)
         run: |
-          curl -L --retry 5 --retry-delay 5 \
-          -o "source.mkv" \
-          "${{ github.event.inputs.video_url }}"
+          URL="${{ github.event.inputs.video_url }}"
 
-      - name: 🚀 Encode + Upload with Telegram Progress
+          echo "Downloading:"
+          echo "$URL"
+
+          curl --globoff -L \
+               --retry 5 \
+               --retry-delay 5 \
+               --fail \
+               --connect-timeout 30 \
+               -o "source.mkv" \
+               "$URL"
+
+          echo "Download completed."
+          ls -lh source.mkv
+
+      - name: 🚀 Encode + Upload
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
