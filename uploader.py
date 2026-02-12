@@ -61,6 +61,41 @@ def select_params(height):
     elif height >= 700: return 24, 6
     return 22, 4
 
+# ---------- UPLOAD CALLBACK ----------
+
+last_up_update = 0
+
+async def upload_progress(current, total, app, chat_id, status_msg, file_name):
+    """Callback to update the UI during the Telegram upload phase."""
+    global last_up_update
+    now = time.time()
+    
+    # Update UI only every 10 seconds to avoid Telegram rate limits
+    if now - last_up_update < 10:
+        return
+        
+    percent = (current / total) * 100
+    bar = generate_progress_bar(percent)
+    cur_mb = current / (1024 * 1024)
+    tot_mb = total / (1024 * 1024)
+    
+    scifi_up_ui = (
+        f"<code>┌─── 🛰️ [ SYSTEM.UPLINK.ACTIVE ] ───┐\n"
+        f"│                                    \n"
+        f"│ 📂 FILE: {file_name}\n"
+        f"│ 📊 PROG: {bar} {percent:.1f}%\n"
+        f"│ 📦 SIZE: {cur_mb:.2f} / {tot_mb:.2f} MB\n"
+        f"│ 📡 STATUS: Transmitting to Orbit... \n"
+        f"│                                    \n"
+        f"└────────────────────────────────────┘</code>"
+    )
+    
+    try:
+        await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
+        last_up_update = now
+    except:
+        pass
+
 # ---------- MAIN PROCESS ----------
 
 async def main():
@@ -81,7 +116,6 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
-    # [span_0](start_span)Robust Params Logic[span_0](end_span)
     def_crf, def_preset = select_params(height)
     final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
     final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
@@ -94,10 +128,10 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        # [span_1](start_span)Initial status[span_1](end_span)
+        # Initial status
         status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         
-        # [span_2](start_span)Start grid generation in background[span_2](end_span)
+        # Start grid generation in background
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
@@ -133,7 +167,6 @@ async def main():
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
                             
-                            # [span_3](start_span)Updated Sci-Fi UI with Done Duration[span_3](end_span)
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
@@ -159,16 +192,11 @@ async def main():
         total_mission_time = time.time() - start_time
         await grid_task 
 
-        # [span_4](start_span)Delete the progress UI message to keep chat clean[span_4](end_span)
-        try:
-            await status.delete()
-        except:
-            pass
-
         if PROCESS.returncode != 0:
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
+        # Prepare for upload
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
@@ -176,7 +204,6 @@ async def main():
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
-        # [span_5](start_span)Expanded Mission Report[span_5](end_span)
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
@@ -189,13 +216,22 @@ async def main():
             f"└ <b>Audio:</b> Opus @ {u_bitrate}"
         )
 
+        # [span_1](start_span)Start Upload with visual progress[span_1](end_span)
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
             caption=report,
-            parse_mode=enums.ParseMode.HTML
+            parse_mode=enums.ParseMode.HTML,
+            progress=upload_progress,
+            progress_args=(app, chat_id, status, file_name)
         )
         
+        # Cleanup
+        try:
+            await status.delete()
+        except:
+            pass
+
         for f in [SOURCE, file_name, LOG_FILE]:
             if os.path.exists(f): os.remove(f)
 
