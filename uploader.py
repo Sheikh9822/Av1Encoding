@@ -10,6 +10,7 @@ from pyrogram.errors import FloodWait
 
 SOURCE = "source.mkv"
 SCREENSHOT = "grid_preview.jpg"
+LOG_FILE = "encode_log.txt"
 CANCELLED = False
 PROCESS = None
 
@@ -27,7 +28,6 @@ def get_video_info():
     duration = float(res['format'].get('duration', 0))
     height = int(video_stream.get('height', 0))
     
-    # Detect HDR
     color_primaries = video_stream.get('color_primaries', 'bt709')
     is_hdr = 'bt2020' in color_primaries
     
@@ -35,7 +35,6 @@ def get_video_info():
 
 def generate_grid(duration):
     """Creates a 3x3 thumbnail grid across the video duration."""
-    # Takes 9 snapshots at regular intervals and tiles them
     interval = duration / 10
     select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
     cmd = [
@@ -44,15 +43,14 @@ def generate_grid(duration):
     ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def get_vmaf(output_file):
-    """Calculates approximate SSIM as a proxy for quality if VMAF is too slow."""
+def get_ssim(output_file):
+    """Calculates SSIM as a quality proxy."""
     cmd = [
         "ffmpeg", "-i", output_file, "-i", SOURCE, 
         "-filter_complex", "ssim", "-f", "null", "-"
     ]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True)
-        # Extracting SSIM All value
         for line in res.stderr.split('\n'):
             if "All:" in line: return line.split("All:")[1].split(" ")[0]
     except: return "N/A"
@@ -63,15 +61,12 @@ def select_params(height):
     elif height >= 700: return 24, 6
     else: return 22, 4
 
-# ---------- UTILS ----------
-
 async def safe_edit(chat_id, message_id, text, app):
     try:
         await app.edit_message_text(chat_id, message_id, text)
     except FloodWait as e:
         await asyncio.sleep(e.value)
-    except Exception:
-        pass
+    except Exception: pass
 
 # ---------- MAIN ----------
 
@@ -88,6 +83,7 @@ async def main():
     u_crf = os.getenv("USER_CRF")
     u_preset = os.getenv("USER_PRESET")
     u_audio = os.getenv("AUDIO_MODE", "opus")
+    u_bitrate = os.getenv("AUDIO_BITRATE", "128k")
     run_vmaf = os.getenv("RUN_VMAF", "false").lower() == "true"
 
     try:
@@ -100,9 +96,8 @@ async def main():
     final_crf = u_crf if u_crf else def_crf
     final_preset = u_preset if u_preset else def_preset
     
-    # Filters and Audio logic
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
-    audio_cmd = ["-c:a", "libopus", "-b:a", "128k"] if u_audio == "opus" else ["-c:a", "copy"]
+    audio_cmd = ["-c:a", "libopus", "-b:a", u_bitrate] if u_audio == "opus" else ["-c:a", "copy"]
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
@@ -119,7 +114,6 @@ async def main():
         generate_grid(duration)
 
         start_time = time.time()
-        # Advanced Mapping: Video, All Audio, All Subs
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *scale_filter,
@@ -130,37 +124,40 @@ async def main():
             "-map_metadata", "0", "-progress", "pipe:1", "-nostats", "-y", file_name
         ]
 
-        PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         last_update = 0
-
-        for line in PROCESS.stdout:
-            if CANCELLED: break
-            if "out_time_ms" in line:
-                try:
-                    out_time = int(line.split("=")[1]) / 1_000_000
-                    percent = (out_time / duration) * 100
-                    elapsed = time.time() - start_time
-                    speed = out_time / elapsed if elapsed > 0 else 0
-                    
-                    if time.time() - last_update > 20:
-                        size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
-                        msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
-                        await safe_edit(chat_id, status.id, msg, app)
-                        last_update = time.time()
-                except: continue
+        with open(LOG_FILE, "w") as f_log:
+            PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            for line in PROCESS.stdout:
+                f_log.write(line)
+                if CANCELLED: break
+                if "out_time_ms" in line:
+                    try:
+                        out_time = int(line.split("=")[1]) / 1_000_000
+                        percent = (out_time / duration) * 100
+                        elapsed = time.time() - start_time
+                        speed = out_time / elapsed if elapsed > 0 else 0
+                        if time.time() - last_update > 20:
+                            size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
+                            msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
+                            await safe_edit(chat_id, status.id, msg, app)
+                            last_update = time.time()
+                    except: continue
 
         PROCESS.wait()
         if CANCELLED: return
 
-        vmaf_score = get_vmaf(file_name) if run_vmaf else "Skipped"
+        if PROCESS.returncode != 0:
+            await app.send_document(chat_id, LOG_FILE, caption="❌ **Encode Failed.** Check logs.")
+            return
 
-        await safe_edit(chat_id, status.id, f"✅ **Encode Finished!**\n📊 SSIM: `{vmaf_score}`\n📤 *Uploading...*", app)
+        ssim_score = get_ssim(file_name) if run_vmaf else "Skipped"
+        await safe_edit(chat_id, status.id, f"✅ **Encode Finished!**\n📊 SSIM: `{ssim_score}`\n📤 *Uploading...*", app)
 
         if os.path.exists(SCREENSHOT):
             try:
                 await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview Grid:** `{file_name}`")
                 os.remove(SCREENSHOT)
-            except Exception as e: print(f"Failed to send grid: {e}")
+            except: pass
 
         async def upload_progress(current, total):
             nonlocal last_update
@@ -171,14 +168,14 @@ async def main():
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
-            caption=f"✅ **AV1 Done**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | SSIM: {vmaf_score}",
+            caption=f"✅ **AV1 Done**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | SSIM: {ssim_score}",
             progress=upload_progress
         )
         
-        for f in [SOURCE, file_name]:
+        for f in [SOURCE, file_name, LOG_FILE]:
             if os.path.exists(f): os.remove(f)
         await safe_edit(chat_id, status.id, "🎉 **Task Successfully Completed!**", app)
 
 if __name__ == "__main__":
     asyncio.run(main())
-                    
+    
