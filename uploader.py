@@ -15,31 +15,39 @@ LOG_FILE = "encode_log.txt"
 CANCELLED = False
 PROCESS = None
 
-# ---------- METADATA & TOOLS ----------
+# ---------- TOOLS & ANALYTICS ----------
 
 def get_video_info():
+    """Extracts detailed metadata using ffprobe."""
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", SOURCE]
     res = json.loads(subprocess.check_output(cmd).decode())
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
     
     duration = float(res['format'].get('duration', 0))
     height = int(video_stream.get('height', 0))
-    fps_val = eval(video_stream.get('r_frame_rate', '24/1'))
+    
+    # Calculate total frames for FPS tracking
+    fps_raw = video_stream.get('r_frame_rate', '24/1')
+    fps_val = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
     total_frames = int(video_stream.get('nb_frames', duration * fps_val))
+    
+    # HDR Detection
     is_hdr = 'bt2020' in video_stream.get('color_primaries', 'bt709')
     
     return duration, height, is_hdr, total_frames
 
 def generate_progress_bar(percentage):
-    """Creates a visual ASCII bar using ▰ and ▱ (15 segments)."""
+    """Creates a 15-segment Sci-Fi progress bar."""
     total_segments = 15
     completed = int((percentage / 100) * total_segments)
     return "[" + "▰" * completed + "▱" * (total_segments - completed) + "]"
 
 def format_time(seconds):
+    """Formats seconds into HH:MM:SS."""
     return str(timedelta(seconds=int(seconds))).zfill(8)
 
 def get_ssim(output_file):
+    """Calculates Structural Similarity Index (Quality Score)."""
     cmd = ["ffmpeg", "-i", output_file, "-i", SOURCE, "-filter_complex", "ssim", "-f", "null", "-"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -48,61 +56,71 @@ def get_ssim(output_file):
     except: return "N/A"
 
 def generate_grid(duration):
+    """Creates a 3x3 proof-of-quality grid."""
     interval = duration / 10
     select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
     cmd = ["ffmpeg", "-i", SOURCE, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-# ---------- MAIN ----------
+def select_params(height):
+    """Auto-param logic if user leaves fields empty."""
+    if height >= 2000: return 32, 10
+    elif height >= 1000: return 28, 8
+    elif height >= 700: return 24, 6
+    else: return 22, 4
+
+# ---------- MAIN ENCODE PROCESS ----------
 
 async def main():
     global CANCELLED, PROCESS
 
-    api_id = int(os.getenv("API_ID"))
-    api_hash = os.getenv("API_HASH")
-    bot_token = os.getenv("BOT_TOKEN")
-    chat_id = int(os.getenv("CHAT_ID"))
+    # Load Env Vars
+    api_id, api_hash = int(os.getenv("API_ID")), os.getenv("API_HASH")
+    bot_token, chat_id = os.getenv("BOT_TOKEN"), int(os.getenv("CHAT_ID"))
     file_name = os.getenv("FILE_NAME")
     
     u_res = os.getenv("USER_RES")
-    u_crf = os.getenv("USER_CRF", "28")
-    u_preset = os.getenv("USER_PRESET", "8")
-    u_audio = os.getenv("AUDIO_MODE", "opus")
-    u_bitrate = os.getenv("AUDIO_BITRATE", "128k")
+    u_crf_raw = os.getenv("USER_CRF")
+    u_preset_raw = os.getenv("USER_PRESET")
+    u_audio, u_bitrate = os.getenv("AUDIO_MODE", "opus"), os.getenv("AUDIO_BITRATE", "128k")
     run_vmaf = os.getenv("RUN_VMAF", "true").lower() == "true"
 
     try:
         duration, height, is_hdr, total_frames = get_video_info()
     except Exception as e:
-        print(f"Metadata Error: {e}")
+        print(f"Metadata error: {e}")
         return
 
+    # Robust Parameter Validation (Fixes the '.' error)
+    def_crf, def_preset = select_params(height)
+    final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
+    final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
+    
     res_label = u_res if u_res else f"{height}p"
     hdr_label = "HDR10" if is_hdr else "SDR"
     
-    # FFmpeg Command Construction
+    # Command Construction
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
     audio_cmd = ["-c:a", "libopus", "-b:a", u_bitrate] if u_audio == "opus" else ["-c:a", "copy"]
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
 
-        status = await app.send_message(chat_id, "📡 **SYSTEM BOOT... INITIALIZING ENCODER**")
+        status = await app.send_message(chat_id, "📡 **SYSTEM BOOT... CONNECTING TO ENCODER CORE**")
         generate_grid(duration)
 
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *scale_filter,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
-            "-crf", str(u_crf), "-preset", str(u_preset),
+            "-crf", str(final_crf), "-preset", str(final_preset),
             "-svtav1-params", f"tune=0:aq-mode=2{hdr_params}",
             *audio_cmd, "-c:s", "copy",
             "-metadata", "comment=Encoded by Gemini AV1 Bot",
             "-progress", "pipe:1", "-nostats", "-y", file_name
         ]
 
-        start_time = time.time()
-        last_update = 0
+        start_time, last_update = time.time(), 0
 
         with open(LOG_FILE, "w") as f_log:
             PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
@@ -111,12 +129,10 @@ async def main():
                 if CANCELLED: break
                 if "out_time_ms" in line:
                     try:
-                        out_time_ms = int(line.split("=")[1])
-                        curr_sec = out_time_ms / 1_000_000
+                        curr_sec = int(line.split("=")[1]) / 1_000_000
                         percent = (curr_sec / duration) * 100
                         elapsed = time.time() - start_time
                         
-                        # Stats
                         speed = curr_sec / elapsed if elapsed > 0 else 0
                         fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
                         eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
@@ -125,7 +141,6 @@ async def main():
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
                             
-                            # Sci-Fi UI Layout
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
@@ -147,12 +162,12 @@ async def main():
 
         PROCESS.wait()
         if PROCESS.returncode != 0:
-            await app.send_document(chat_id, LOG_FILE, caption="❌ **SYSTEM CRITICAL ERROR.** Check logs.")
+            await app.send_document(chat_id, LOG_FILE, caption="❌ **SYSTEM CRITICAL ERROR.** Logs uploaded.")
             return
 
-        ssim_score = get_ssim(file_name) if run_vmaf else "Skipped"
+        ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         
-        # FINAL UPLOAD
+        # Dispatch Photo & Document
         if os.path.exists(SCREENSHOT):
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **GRID PREVIEW:** `{file_name}`")
             os.remove(SCREENSHOT)
@@ -160,8 +175,7 @@ async def main():
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
-            caption=f"✅ **ENCODE COMPLETE**\n📄 `{file_name}`\n🛠 CRF: {u_crf} | SSIM: {ssim_score}",
-            progress=None # Can add progress back if needed
+            caption=f"✅ **ENCODE SUCCESSFUL**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | SSIM: {ssim_val}"
         )
         
         for f in [SOURCE, file_name, LOG_FILE]:
