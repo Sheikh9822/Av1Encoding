@@ -1,4 +1,5 @@
 name: Encode and Send
+
 on:
   workflow_dispatch:
     inputs:
@@ -12,25 +13,79 @@ on:
 jobs:
   encode:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 360
 
-      - name: 🛠️ Install FFmpeg & Python Deps
+    steps:
+      - name: 📂 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
           pip install pyrogram tgcrypto
 
-      - name: 📥 Download from Index
+      # ----------------------------
+      # SAFE URL DOWNLOAD (Production Grade)
+      # ----------------------------
+      - name: 📥 Download Source (Safe URL Encode)
         run: |
-          curl -L -o "source.mkv" "${{ github.event.inputs.video_url }}"
+          python3 - <<EOF
+import urllib.parse
+import subprocess
 
+url = "${{ github.event.inputs.video_url }}"
+
+parsed = urllib.parse.urlsplit(url)
+
+encoded_path = urllib.parse.quote(parsed.path)
+encoded_query = urllib.parse.quote_plus(parsed.query, safe="=&")
+
+safe_url = urllib.parse.urlunsplit((
+    parsed.scheme,
+    parsed.netloc,
+    encoded_path,
+    encoded_query,
+    parsed.fragment
+))
+
+print("Final Encoded URL:", safe_url)
+
+subprocess.run(
+    ["curl", "-L", "--fail", "--retry", "3", "-o", "source.mkv", safe_url],
+    check=True
+)
+EOF
+
+      - name: 📊 Show Source File Info
+        run: |
+          ls -lh source.mkv
+          ffprobe -hide_banner source.mkv
+
+      # ----------------------------
+      # AV1 ENCODE (Balanced Quality/Size)
+      # ----------------------------
       - name: ⚙️ SVT-AV1 Encode
         run: |
-          # Preset 8 and CRF 40 targets roughly 50MB for 24min anime
-          ffmpeg -i "source.mkv" -c:v libsvtav1 -preset 8 -crf 40 \
-          -svtav1-params tune=0:film-grain=0:keyint=480 -pix_fmt yuv420p10le \
-          -s 1920x1080 -c:a libopus -b:a 48k "${{ github.event.inputs.custom_name }}.mkv"
+          ffmpeg -i source.mkv \
+          -map 0:v -map 0:a? \
+          -c:v libsvtav1 \
+          -preset 8 \
+          -crf 40 \
+          -pix_fmt yuv420p10le \
+          -svtav1-params tune=0:film-grain=0:keyint=480 \
+          -vf "scale=1920:1080:flags=lanczos" \
+          -c:a libopus -b:a 48k \
+          -movflags +faststart \
+          "${{ github.event.inputs.custom_name }}.mkv"
 
+      - name: 📊 Show Encoded File Info
+        run: |
+          ls -lh "${{ github.event.inputs.custom_name }}.mkv"
+
+      # ----------------------------
+      # TELEGRAM UPLOAD
+      # ----------------------------
       - name: 📤 Upload via UserBot
         env:
           API_ID: ${{ secrets.TG_API_ID }}
@@ -39,4 +94,3 @@ jobs:
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
         run: python uploader.py
-        
