@@ -18,6 +18,14 @@ on:
       custom_preset:
         description: 'Preset (Empty for auto)'
         required: false
+      audio_mode:
+        description: 'Audio: (opus / copy)'
+        default: 'opus'
+        required: false
+      run_vmaf:
+        description: 'Run VMAF Quality Check? (true/false)'
+        default: 'false'
+        required: false
 
 jobs:
   encode:
@@ -46,4 +54,7 @@ jobs:
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
+          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
+          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
         run: python uploader.py
+        
