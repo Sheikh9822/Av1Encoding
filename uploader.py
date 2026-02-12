@@ -10,7 +10,6 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 app = Client("encoder", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
 active_process = None
 
 # ---------------------------
@@ -47,12 +46,19 @@ def get_resolution(file):
     )
     return int(result.stdout)
 
-def dynamic_crf(height):
-    # CRF30 for all main resolutions
-    if height >= 480:
-        return 30
+def get_target_bitrate(resolution, duration):
+    if resolution >= 1080:
+        target_mb = 108
+    elif resolution >= 720:
+        target_mb = 72
+    elif resolution >= 480:
+        target_mb = 48
     else:
-        return 28  # for very small videos
+        target_mb = 24  # fallback
+
+    # Bitrate in kbps
+    bitrate_kbps = (target_mb * 8192) / duration
+    return int(bitrate_kbps)
 
 # ---------------------------
 # Cancel Command
@@ -81,11 +87,11 @@ async def encode_handler(client, message):
 
     duration = get_duration(file_path)
     resolution = get_resolution(file_path)
-    crf = dynamic_crf(resolution)
+    target_bitrate = get_target_bitrate(resolution, duration)
 
     output = f"encoded_{os.path.basename(file_path)}"
 
-    for attempt in range(2):  # Retry once if fails
+    for attempt in range(2):  # Retry once
         try:
             cmd = [
                 "ffmpeg",
@@ -93,7 +99,7 @@ async def encode_handler(client, message):
                 "-map", "0",
                 "-c:v", "libsvtav1",
                 "-pix_fmt", "yuv420p10le",
-                "-crf", str(crf),
+                "-b:v", f"{target_bitrate}k",
                 "-preset", "8",
                 "-g", "240",
                 "-svtav1-params", "tune=0:aq-mode=2",
