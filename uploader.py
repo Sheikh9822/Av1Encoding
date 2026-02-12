@@ -2,12 +2,9 @@ import asyncio
 import os
 import subprocess
 import time
-import signal
 import json
 from datetime import timedelta
-from pyrogram import Client, filters, enums
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+from pyrogram import Client, enums
 
 SOURCE = "source.mkv"
 SCREENSHOT = "grid_preview.jpg"
@@ -84,7 +81,7 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
-    # Robust Params Logic
+    # [span_0](start_span)Robust Params Logic[span_0](end_span)
     def_crf, def_preset = select_params(height)
     final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
     final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
@@ -97,10 +94,10 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        # Initial status
+        # [span_1](start_span)Initial status[span_1](end_span)
         status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         
-        # Start grid generation in background
+        # [span_2](start_span)Start grid generation in background[span_2](end_span)
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
@@ -136,12 +133,14 @@ async def main():
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
                             
+                            # [span_3](start_span)Updated Sci-Fi UI with Done Duration[span_3](end_span)
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
                                 f"│ 📂 FILE: {file_name}\n"
                                 f"│ ⚡ SPEED: {speed:.1f}x ({int(fps)} FPS)\n"
                                 f"│ ⏳ TIME: {format_time(elapsed)} / ETA: {format_time(eta)}\n"
+                                f"│ 🕒 DONE: {format_time(curr_sec)} / {format_time(duration)}\n"
                                 f"│                                    \n"
                                 f"│ 📊 PROG: {bar} {percent:.1f}% \n"
                                 f"│                                    \n"
@@ -157,22 +156,43 @@ async def main():
                     except: continue
 
         PROCESS.wait()
-        await grid_task # Wait for grid to finish if it hasn't
+        total_mission_time = time.time() - start_time
+        await grid_task 
+
+        # [span_4](start_span)Delete the progress UI message to keep chat clean[span_4](end_span)
+        try:
+            await status.delete()
+        except:
+            pass
 
         if PROCESS.returncode != 0:
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
+        final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
         if os.path.exists(SCREENSHOT):
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
+        # [span_5](start_span)Expanded Mission Report[span_5](end_span)
+        report = (
+            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
+            f"⏱ <b>ENCODE TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
+            f"📦 <b>FINAL SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+            f"📊 <b>SSIM:</b> <code>{ssim_val}</code>\n\n"
+            f"🛠 <b>ENCODE SPECS:</b>\n"
+            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
+            f"└ <b>Video:</b> {res_label} | {hdr_label} | 10-bit\n"
+            f"└ <b>Audio:</b> Opus @ {u_bitrate}"
+        )
+
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
-            caption=f"✅ <b>MISSION ACCOMPLISHED</b>\n📄 <code>{file_name}</code>\n🛠 CRF: {final_crf} | SSIM: {ssim_val}",
+            caption=report,
             parse_mode=enums.ParseMode.HTML
         )
         
