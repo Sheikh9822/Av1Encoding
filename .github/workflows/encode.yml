@@ -4,11 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct Index Link'
+        description: 'Direct Link'
         required: true
       custom_name:
-        description: 'Formatted Name from HF Bot'
+        description: 'Output Name'
         required: true
+      res_choice:
+        description: 'Resolution (1080, 720, 480) - Empty for original'
+        required: false
+      custom_crf:
+        description: 'CRF (Empty for auto)'
+        required: false
+      custom_preset:
+        description: 'Preset (Empty for auto)'
+        required: false
 
 jobs:
   encode:
@@ -16,44 +25,25 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # Automatically caches pip dependencies
-
-      - name: 🛠 Install Dependencies
+          cache: 'pip'
+      - name: 🛠 Deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
-          python -m pip install --upgrade pip
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install -r requirements.txt
-
-      - name: 📥 Download Source (Glob Disabled)
-        run: |
-          URL="${{ github.event.inputs.video_url }}"
-          echo "Downloading: $URL"
-
-          curl --globoff -L \
-               --retry 5 \
-               --retry-delay 5 \
-               --fail \
-               --connect-timeout 30 \
-               -o "source.mkv" \
-               "$URL"
-
-          echo "Download completed."
-          ls -lh source.mkv
-
-      - name: 🚀 Encode + Upload
+      - name: 📥 Download
+        run: curl --globoff -L -o "source.mkv" "${{ github.event.inputs.video_url }}"
+      - name: 🚀 Run
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
+          USER_RES: ${{ github.event.inputs.res_choice }}
+          USER_CRF: ${{ github.event.inputs.custom_crf }}
+          USER_PRESET: ${{ github.event.inputs.custom_preset }}
         run: python uploader.py
-        
