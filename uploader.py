@@ -88,10 +88,34 @@ async def encode_handler(client, message):
     duration = get_duration(file_path)
     resolution = get_resolution(file_path)
     target_bitrate = get_target_bitrate(resolution, duration)
-
     output = f"encoded_{os.path.basename(file_path)}"
 
-    for attempt in range(2):  # Retry once
+    # Special case: extremely short videos
+    if duration < 5:
+        await message.reply("⚡ Very short video, encoding directly...")
+        subprocess.run([
+            "ffmpeg", "-i", file_path,
+            "-map", "0",
+            "-c:v", "libsvtav1",
+            "-pix_fmt", "yuv420p10le",
+            "-b:v", f"{target_bitrate}k",
+            "-preset", "8",
+            "-g", "240",
+            "-svtav1-params", "tune=0:aq-mode=2",
+            "-c:a", "libopus", "-b:a", "128k",
+            "-c:s", "copy",
+            "-c:t", "copy",
+            "-map_metadata", "0",
+            output
+        ])
+        await client.send_document(chat_id, output)
+        os.remove(file_path)
+        os.remove(output)
+        await message.reply("✅ Done. Source deleted.")
+        return
+
+    # Long video encoding with progress
+    for attempt in range(2):  # retry once
         try:
             cmd = [
                 "ffmpeg",
@@ -122,14 +146,17 @@ async def encode_handler(client, message):
             status = await message.reply("🎬 Encoding started...")
             start_time = time.time()
             last_update = 0
-
             out_time = 0
             size_bytes = 0
 
             while True:
+                # Stop loop if process ended
+                if active_process.poll() is not None:
+                    break
+
                 line = active_process.stdout.readline()
                 if not line:
-                    break
+                    continue
 
                 if "out_time_ms=" in line:
                     out_time = int(line.split("=")[1]) / 1_000_000
@@ -137,23 +164,21 @@ async def encode_handler(client, message):
                 if os.path.exists(output):
                     size_bytes = os.path.getsize(output)
 
+                # Safety for very fast videos
+                if out_time == 0 and os.path.exists(output):
+                    out_time = duration
+
                 elapsed = time.time() - start_time
-                percent = (out_time / duration) * 100 if duration else 0
+                percent = min((out_time / duration) * 100, 100)
                 fps = out_time / elapsed if elapsed > 0 else 0
                 speed = fps
                 eta = (duration - out_time) / speed if speed > 0 else 0
-
                 size_mb = size_bytes / (1024 * 1024)
-                bitrate = (size_bytes * 8 / out_time / 1000) if out_time > 0 else 0
-
-                predicted_size_mb = 0
-                if out_time > 0:
-                    growth_rate = size_mb / out_time
-                    predicted_size_mb = growth_rate * duration
-
+                bitrate_calc = (size_bytes * 8 / out_time / 1000) if out_time > 0 else 0
+                predicted_size_mb = (size_mb / out_time * duration) if out_time > 0 else 0
                 cpu = psutil.cpu_percent()
 
-                if time.time() - last_update > 5:
+                if time.time() - last_update > 2:  # update every 2 sec
                     bar = progress_bar(percent, 25, int(elapsed))
                     await client.edit_message_text(
                         chat_id,
@@ -162,7 +187,7 @@ async def encode_handler(client, message):
                         f"[{bar}] {percent:.2f}%\n\n"
                         f"⏳ {format_time(out_time)} / {format_time(duration)}\n"
                         f"📦 {size_mb:.2f} MB / ~{predicted_size_mb:.2f} MB\n"
-                        f"📊 Bitrate: {bitrate:.0f} kbps\n"
+                        f"📊 Bitrate: {bitrate_calc:.0f} kbps\n"
                         f"⚡ FPS: {fps:.2f}\n"
                         f"🚀 Speed: {speed:.2f}x\n"
                         f"🖥 CPU: {cpu:.1f}%\n"
@@ -182,6 +207,7 @@ async def encode_handler(client, message):
     await message.reply("📤 Uploading...")
     await client.send_document(chat_id, output)
 
+    # Clean up
     if os.path.exists(file_path):
         os.remove(file_path)
     if os.path.exists(output):
