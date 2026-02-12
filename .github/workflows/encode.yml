@@ -1,4 +1,4 @@
-name: Ultra Compress Encode & Send
+name: Encode and Send
 
 on:
   workflow_dispatch:
@@ -7,13 +7,13 @@ on:
         description: 'Direct Index Link'
         required: true
       custom_name:
-        description: 'Formatted Name for Output'
+        description: 'Formatted Name from HF Bot'
         required: true
 
 jobs:
   encode:
     runs-on: ubuntu-latest
-    timeout-minutes: 480  # Max ~8 hours for ultra slow preset
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +21,16 @@ jobs:
       - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl python3-pip
-          pip install pyrogram tgcrypto psutil
+          sudo apt-get install -y ffmpeg curl
+          pip install pyrogram tgcrypto
 
-      - name: 📥 Download Source
+      - name: 📥 Download Source (Glob Disabled)
         run: |
           URL="${{ github.event.inputs.video_url }}"
-          echo "Downloading source from: $URL"
+
+          echo "Downloading:"
+          echo "$URL"
+
           curl --globoff -L \
                --retry 5 \
                --retry-delay 5 \
@@ -35,10 +38,11 @@ jobs:
                --connect-timeout 30 \
                -o "source.mkv" \
                "$URL"
-          echo "✅ Download completed."
+
+          echo "Download completed."
           ls -lh source.mkv
 
-      - name: 🚀 Encode + Upload to Telegram
+      - name: 🚀 Encode + Upload
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
