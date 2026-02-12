@@ -5,7 +5,7 @@ import time
 import signal
 import json
 from datetime import timedelta
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 
@@ -38,7 +38,6 @@ def format_time(seconds):
     return str(timedelta(seconds=int(seconds))).zfill(8)
 
 async def async_generate_grid(duration):
-    """Runs grid generation in a separate thread so it doesn't block UI."""
     loop = asyncio.get_event_loop()
     def sync_grid():
         interval = duration / 10
@@ -93,13 +92,11 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        # 1. SEND INITIAL UI IMMEDIATELY
-        status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Connecting to Neural Link...</b>", parse_mode="html")
+        # Fixed Parse Mode here
+        status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Connecting to Neural Link...</b>", parse_mode=enums.ParseMode.HTML)
 
-        # 2. START GRID GENERATION (NON-BLOCKING)
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
-        # 3. CONFIGURE FFmpeg
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *scale_filter,
@@ -113,7 +110,6 @@ async def main():
 
         start_time, last_update = time.time(), 0
 
-        # 4. START ENCODING
         with open(LOG_FILE, "w") as f_log:
             PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             
@@ -131,7 +127,6 @@ async def main():
                         fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
                         eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                         
-                        # UPDATE UI EVERY 20 SECONDS (To avoid Telegram Rate Limits)
                         if time.time() - last_update > 20:
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
@@ -151,29 +146,29 @@ async def main():
                                 f"│                                    \n"
                                 f"└────────────────────────────────────┘</code>"
                             )
-                            await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode="html")
+                            # Fixed Parse Mode here
+                            await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
                             last_update = time.time()
                     except: continue
 
         PROCESS.wait()
-        await grid_task # Ensure grid is finished before moving on
+        await grid_task 
 
         if PROCESS.returncode != 0:
-            await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Overload</b>", parse_mode="html")
+            await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Overload</b>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # 5. FINAL TASKS
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         
         if os.path.exists(SCREENSHOT):
-            await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode="html")
+            await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
             caption=f"✅ <b>MISSION ACCOMPLISHED</b>\n📄 <code>{file_name}</code>\n🛠 CRF: {final_crf} | SSIM: {ssim_val}",
-            parse_mode="html"
+            parse_mode=enums.ParseMode.HTML
         )
         
         for f in [SOURCE, file_name, LOG_FILE]:
@@ -181,3 +176,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
