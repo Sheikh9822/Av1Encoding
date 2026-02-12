@@ -22,9 +22,13 @@ on:
         description: 'Audio: (opus / copy)'
         default: 'opus'
         required: false
+      audio_bitrate:
+        description: 'Opus Bitrate (e.g., 128k, 160k, 192k)'
+        default: '128k'
+        required: false
       run_vmaf:
-        description: 'Run VMAF Quality Check? (true/false)'
-        default: 'false'
+        description: 'Run Quality Check? (true/false)'
+        default: 'true'
         required: false
 
 jobs:
@@ -55,6 +59,7 @@ jobs:
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
+          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
         run: python uploader.py
         
