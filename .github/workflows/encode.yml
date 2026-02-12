@@ -86,8 +86,8 @@ jobs:
           ffmpeg -i source.mkv \
           -map 0:v -map 0:a? \
           -c:v libsvtav1 \
-          -preset 8 \
-          -crf 40 \
+          -preset 9 \
+          -crf 46 \
           -pix_fmt yuv420p10le \
           -svtav1-params "tune=0:film-grain=0:keyint=480" \
           -vf "scale=1920:1080:flags=lanczos" \
