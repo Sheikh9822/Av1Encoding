@@ -3,34 +3,59 @@ import os
 import subprocess
 import time
 import signal
+import json
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 
 SOURCE = "source.mkv"
-SCREENSHOT = "preview.jpg"
+SCREENSHOT = "grid_preview.jpg"
 CANCELLED = False
 PROCESS = None
 
 # ---------- METADATA & TOOLS ----------
 
-def get_duration():
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", SOURCE]
-    return float(subprocess.check_output(cmd).decode().strip())
-
-def get_height():
-    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height", "-of", "csv=p=0", SOURCE]
-    return int(subprocess.check_output(cmd).decode().strip())
-
-def generate_screenshot(duration):
-    """Captures a frame from the middle of the video."""
-    ss_time = duration / 2
+def get_video_info():
+    """Fetches duration, height, and HDR metadata using ffprobe."""
     cmd = [
-        "ffmpeg", "-ss", str(ss_time), "-i", SOURCE,
-        "-frames:v", "1", "-q:v", "2", SCREENSHOT, "-y"
+        "ffprobe", "-v", "quiet", "-print_format", "json", 
+        "-show_streams", "-show_format", SOURCE
     ]
-    # Fixed DEVNULL typo here
+    res = json.loads(subprocess.check_output(cmd).decode())
+    video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
+    
+    duration = float(res['format'].get('duration', 0))
+    height = int(video_stream.get('height', 0))
+    
+    # Detect HDR
+    color_primaries = video_stream.get('color_primaries', 'bt709')
+    is_hdr = 'bt2020' in color_primaries
+    
+    return duration, height, is_hdr
+
+def generate_grid(duration):
+    """Creates a 3x3 thumbnail grid across the video duration."""
+    # Takes 9 snapshots at regular intervals and tiles them
+    interval = duration / 10
+    select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
+    cmd = [
+        "ffmpeg", "-i", SOURCE, "-vf", f"{select_filter},scale=480:-1,tile=3x3",
+        "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"
+    ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def get_vmaf(output_file):
+    """Calculates approximate SSIM as a proxy for quality if VMAF is too slow."""
+    cmd = [
+        "ffmpeg", "-i", output_file, "-i", SOURCE, 
+        "-filter_complex", "ssim", "-f", "null", "-"
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        # Extracting SSIM All value
+        for line in res.stderr.split('\n'):
+            if "All:" in line: return line.split("All:")[1].split(" ")[0]
+    except: return "N/A"
 
 def select_params(height):
     if height >= 2000: return 32, 10
@@ -62,10 +87,11 @@ async def main():
     u_res = os.getenv("USER_RES")
     u_crf = os.getenv("USER_CRF")
     u_preset = os.getenv("USER_PRESET")
+    u_audio = os.getenv("AUDIO_MODE", "opus")
+    run_vmaf = os.getenv("RUN_VMAF", "false").lower() == "true"
 
     try:
-        duration = get_duration()
-        height = get_height()
+        duration, height, is_hdr = get_video_info()
     except Exception as e:
         print(f"Error reading file: {e}")
         return
@@ -74,7 +100,10 @@ async def main():
     final_crf = u_crf if u_crf else def_crf
     final_preset = u_preset if u_preset else def_preset
     
+    # Filters and Audio logic
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
+    audio_cmd = ["-c:a", "libopus", "-b:a", "128k"] if u_audio == "opus" else ["-c:a", "copy"]
+    hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
 
@@ -85,19 +114,19 @@ async def main():
             if PROCESS: PROCESS.send_signal(signal.SIGINT)
             await message.reply("❌ **Encoding Terminated.**")
 
-        status = await app.send_message(chat_id, f"🎬 **Encoding Started**\nOutput: `{file_name}`\nCRF: {final_crf} | Preset: {final_preset}")
+        status = await app.send_message(chat_id, f"🎬 **Encoding Started**\nOutput: `{file_name}`\nCRF: {final_crf} | P: {final_preset} | HDR: {is_hdr}")
 
-        # Capture screenshot from source
-        generate_screenshot(duration)
+        generate_grid(duration)
 
         start_time = time.time()
+        # Advanced Mapping: Video, All Audio, All Subs
         cmd = [
-            "ffmpeg", "-i", SOURCE, "-map", "0",
+            "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *scale_filter,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), "-preset", str(final_preset),
-            "-svtav1-params", "tune=0:aq-mode=2",
-            "-c:a", "libopus", "-b:a", "128k", "-c:s", "copy",
+            "-svtav1-params", f"tune=0:aq-mode=2{hdr_params}",
+            *audio_cmd, "-c:s", "copy",
             "-map_metadata", "0", "-progress", "pipe:1", "-nostats", "-y", file_name
         ]
 
@@ -113,26 +142,25 @@ async def main():
                     elapsed = time.time() - start_time
                     speed = out_time / elapsed if elapsed > 0 else 0
                     
-                    if time.time() - last_update > 15:
+                    if time.time() - last_update > 20:
                         size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
                         msg = f"🎬 **Encoding...**\n`{percent:.2f}%` | Speed: {speed:.2f}x\n📦 Size: {size:.2f} MB"
                         await safe_edit(chat_id, status.id, msg, app)
                         last_update = time.time()
-                except:
-                    continue
+                except: continue
 
         PROCESS.wait()
         if CANCELLED: return
 
-        await safe_edit(chat_id, status.id, "✅ **Encode Finished!**\n📤 *Uploading...*", app)
+        vmaf_score = get_vmaf(file_name) if run_vmaf else "Skipped"
 
-        # Send Screenshot first
+        await safe_edit(chat_id, status.id, f"✅ **Encode Finished!**\n📊 SSIM: `{vmaf_score}`\n📤 *Uploading...*", app)
+
         if os.path.exists(SCREENSHOT):
             try:
-                await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview:** `{file_name}`")
+                await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 **Preview Grid:** `{file_name}`")
                 os.remove(SCREENSHOT)
-            except Exception as e:
-                print(f"Failed to send screenshot: {e}")
+            except Exception as e: print(f"Failed to send grid: {e}")
 
         async def upload_progress(current, total):
             nonlocal last_update
@@ -143,7 +171,7 @@ async def main():
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
-            caption=f"✅ **AV1 Done**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | P: {final_preset}",
+            caption=f"✅ **AV1 Done**\n📄 `{file_name}`\n🛠 CRF: {final_crf} | SSIM: {vmaf_score}",
             progress=upload_progress
         )
         
@@ -153,4 +181,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+                    
