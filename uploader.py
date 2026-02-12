@@ -1,94 +1,100 @@
-import asyncio
 import os
-import subprocess
 import time
-import signal
+import asyncio
+import psutil
+import subprocess
 from pyrogram import Client, filters
-from pyrogram.types import Message
 
-SOURCE = "source.mkv"
-CANCELLED = False
-PROCESS = None
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ---------- FFPROBE ----------
+app = Client("encoder", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-def get_duration():
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        SOURCE
-    ]
-    return float(subprocess.check_output(cmd).decode().strip())
+active_process = None
 
-def get_height():
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=height",
-        "-of", "csv=p=0",
-        SOURCE
-    ]
-    return int(subprocess.check_output(cmd).decode().strip())
+# ---------------------------
+# Helper Functions
+# ---------------------------
 
-def select_crf(height):
-    if height >= 2000:
-        return 30, 8
-    elif height >= 1000:
-        return 28, 8
-    elif height >= 700:
-        return 27, 8
-    elif height >= 480:
-        return 25, 7
+def format_time(seconds):
+    seconds = int(seconds)
+    return f"{seconds//60:02d}:{seconds%60:02d}"
+
+def progress_bar(percent, width=25, frame=0):
+    frames = ["█", "▓"]
+    fill = frames[frame % len(frames)]
+    filled = int(width * percent / 100)
+    return fill * filled + "░" * (width - filled)
+
+def get_duration(file):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "format=duration", "-of",
+         "default=noprint_wrappers=1:nokey=1", file],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+    return float(result.stdout)
+
+def get_resolution(file):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=height",
+         "-of", "csv=p=0", file],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+    return int(result.stdout)
+
+def dynamic_crf(height):
+    # CRF30 for all main resolutions
+    if height >= 480:
+        return 30
     else:
-        return 24, 7
+        return 28  # for very small videos
 
-# ---------- MAIN ----------
+# ---------------------------
+# Cancel Command
+# ---------------------------
 
-async def main():
-    global CANCELLED, PROCESS
+@app.on_message(filters.command("cancel"))
+async def cancel_handler(_, message):
+    global active_process
+    if active_process:
+        active_process.kill()
+        await message.reply("❌ Encoding cancelled.")
+    else:
+        await message.reply("Nothing running.")
 
-    api_id = int(os.getenv("API_ID"))
-    api_hash = os.getenv("API_HASH")
-    bot_token = os.getenv("BOT_TOKEN")
-    chat_id = int(os.getenv("CHAT_ID"))
-    file_name = os.getenv("FILE_NAME")
+# ---------------------------
+# Main Handler
+# ---------------------------
 
-    duration = get_duration()
-    height = get_height()
-    crf, preset = select_crf(height)
+@app.on_message(filters.video | filters.document)
+async def encode_handler(client, message):
+    global active_process
 
-    async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+    chat_id = message.chat.id
+    file_path = await message.download()
+    await message.reply("📥 Download complete.\nStarting encode...")
 
-        # Cancel command
-        @app.on_message(filters.command("cancel"))
-        async def cancel_handler(client, message):
-            global CANCELLED, PROCESS
-            CANCELLED = True
-            if PROCESS:
-                PROCESS.send_signal(signal.SIGINT)
-            await message.reply("❌ Encoding cancelled.")
+    duration = get_duration(file_path)
+    resolution = get_resolution(file_path)
+    crf = dynamic_crf(resolution)
 
-        status: Message = await app.send_message(
-            chat_id,
-            f"🎬 Encoding Started\nResolution: {height}p\nCRF: {crf}"
-        )
+    output = f"encoded_{os.path.basename(file_path)}"
 
-        attempt = 0
-        success = False
-
-        while attempt < 2 and not success and not CANCELLED:
-            attempt += 1
-            start_time = time.time()
-
+    for attempt in range(2):  # Retry once if fails
+        try:
             cmd = [
                 "ffmpeg",
-                "-i", SOURCE,
+                "-i", file_path,
                 "-map", "0",
                 "-c:v", "libsvtav1",
                 "-pix_fmt", "yuv420p10le",
                 "-crf", str(crf),
-                "-preset", str(preset),
+                "-preset", "8",
                 "-g", "240",
                 "-svtav1-params", "tune=0:aq-mode=2",
                 "-c:a", "libopus", "-b:a", "128k",
@@ -97,88 +103,84 @@ async def main():
                 "-map_metadata", "0",
                 "-progress", "pipe:1",
                 "-nostats",
-                file_name
+                output
             ]
 
-            PROCESS = subprocess.Popen(
+            active_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True
             )
 
+            status = await message.reply("🎬 Encoding started...")
+            start_time = time.time()
             last_update = 0
 
-            for line in PROCESS.stdout:
-                if CANCELLED:
+            out_time = 0
+            size_bytes = 0
+
+            while True:
+                line = active_process.stdout.readline()
+                if not line:
                     break
 
-                if "out_time_ms" in line:
+                if "out_time_ms=" in line:
                     out_time = int(line.split("=")[1]) / 1_000_000
-                    percent = (out_time / duration) * 100
 
-                    elapsed = time.time() - start_time
-                    fps = out_time / elapsed if elapsed > 0 else 0
-                    speed = out_time / elapsed if elapsed > 0 else 0
+                if os.path.exists(output):
+                    size_bytes = os.path.getsize(output)
 
-                    eta = (duration - out_time) / speed if speed > 0 else 0
-                    eta_min = int(eta // 60)
-                    eta_sec = int(eta % 60)
+                elapsed = time.time() - start_time
+                percent = (out_time / duration) * 100 if duration else 0
+                fps = out_time / elapsed if elapsed > 0 else 0
+                speed = fps
+                eta = (duration - out_time) / speed if speed > 0 else 0
 
-                    size_mb = 0
-                    if os.path.exists(file_name):
-                        size_mb = os.path.getsize(file_name) / (1024 * 1024)
+                size_mb = size_bytes / (1024 * 1024)
+                bitrate = (size_bytes * 8 / out_time / 1000) if out_time > 0 else 0
 
-                    if time.time() - last_update > 5:
-                        await app.edit_message_text(
-                            chat_id,
-                            status.id,
-                            f"🎬 Encoding...\n"
-                            f"{percent:.2f}%\n\n"
-                            f"📦 Size: {size_mb:.2f} MB\n"
-                            f"⚡ FPS: {fps:.2f}\n"
-                            f"🚀 Speed: {speed:.2f}x\n"
-                            f"⏳ ETA: {eta_min}m {eta_sec}s"
-                        )
-                        last_update = time.time()
+                predicted_size_mb = 0
+                if out_time > 0:
+                    growth_rate = size_mb / out_time
+                    predicted_size_mb = growth_rate * duration
 
-            PROCESS.wait()
+                cpu = psutil.cpu_percent()
 
-            if PROCESS.returncode == 0:
-                success = True
-            elif not CANCELLED:
-                await app.edit_message_text(
-                    chat_id,
-                    status.id,
-                    f"⚠️ Encode failed. Retrying... (Attempt {attempt}/2)"
-                )
+                if time.time() - last_update > 5:
+                    bar = progress_bar(percent, 25, int(elapsed))
+                    await client.edit_message_text(
+                        chat_id,
+                        status.id,
+                        f"🎬 **Encoding:** `{os.path.basename(output)}`\n\n"
+                        f"[{bar}] {percent:.2f}%\n\n"
+                        f"⏳ {format_time(out_time)} / {format_time(duration)}\n"
+                        f"📦 {size_mb:.2f} MB / ~{predicted_size_mb:.2f} MB\n"
+                        f"📊 Bitrate: {bitrate:.0f} kbps\n"
+                        f"⚡ FPS: {fps:.2f}\n"
+                        f"🚀 Speed: {speed:.2f}x\n"
+                        f"🖥 CPU: {cpu:.1f}%\n"
+                        f"⏱ Elapsed: {format_time(elapsed)}\n"
+                        f"⏳ ETA: {format_time(eta)}"
+                    )
+                    last_update = time.time()
 
-        if CANCELLED:
-            return
+            active_process.wait()
+            break
 
-        await app.edit_message_text(chat_id, status.id, "✅ Encoding Complete\n📤 Uploading...")
+        except Exception:
+            if attempt == 1:
+                await message.reply("❌ Encoding failed.")
+                return
 
-        # Upload with progress
-        async def upload_progress(current, total):
-            percent = current * 100 / total
-            await app.edit_message_text(
-                chat_id,
-                status.id,
-                f"📤 Uploading...\n{percent:.2f}%"
-            )
+    await message.reply("📤 Uploading...")
+    await client.send_document(chat_id, output)
 
-        await app.send_document(
-            chat_id=chat_id,
-            document=file_name,
-            caption=f"✅ Encoding Complete!\n📄 `{file_name}`",
-            progress=upload_progress
-        )
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    if os.path.exists(output):
+        os.remove(output)
 
-        # Auto delete source
-        if os.path.exists(SOURCE):
-            os.remove(SOURCE)
+    await message.reply("✅ Done. Source deleted.")
 
-        await app.edit_message_text(chat_id, status.id, "🎉 Upload Finished Successfully!")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run()
