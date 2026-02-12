@@ -17,13 +17,6 @@ def format_time(seconds):
     seconds = max(0, int(seconds))
     return f"{seconds//60:02d}:{seconds%60:02d}"
 
-def progress_bar(percent, width=25, frame=0):
-    percent = min(100, max(0, percent))
-    frames = ["█", "▓"]
-    fill = frames[frame % len(frames)]
-    filled = int(width * percent / 100)
-    return fill * filled + "░" * (width - filled)
-
 def get_duration(file):
     try:
         result = subprocess.run(
@@ -35,34 +28,8 @@ def get_duration(file):
             text=True
         )
         return float(result.stdout.strip())
-    except:
-        return 1.0 # Fallback to prevent division by zero
-
-def get_resolution(file):
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=height",
-             "-of", "csv=p=0", file],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-        return int(result.stdout.strip())
-    except:
-        return 720
-
-def dynamic_crf(height):
-    return 28 
-
-@app.on_message(filters.command("cancel"))
-async def cancel_handler(_, message):
-    global active_process
-    if active_process:
-        active_process.kill()
-        await message.reply("❌ Encoding cancelled.")
-    else:
-        await message.reply("Nothing running.")
+    except Exception:
+        return 0.0
 
 @app.on_message(filters.video | filters.document)
 async def encode_handler(client, message):
@@ -72,27 +39,29 @@ async def encode_handler(client, message):
     status = await message.reply("📥 Downloading...")
     file_path = await message.download()
     
-    await status.edit("🎬 Starting encode...")
-
     duration = get_duration(file_path)
-    resolution = get_resolution(file_path)
-    crf = dynamic_crf(resolution)
 
+    # --- SKIP LOGIC FOR SHORT VIDEOS ---
+    if duration < 10:
+        await status.edit(f"⚠️ Video is only {duration:.1f}s. Skipping encode and uploading source...")
+        await client.send_document(chat_id, file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        await status.delete()
+        return
+    # ----------------------------------
+
+    await status.edit("🎬 Starting encode...")
     output = f"encoded_{os.path.basename(file_path)}"
     if not output.endswith(".mkv"):
         output += ".mkv"
 
-    # SVT-AV1 Presets: 2 or 3 = High Compression, 10 = Fast/Low Compression
     cmd = [
         "ffmpeg", "-i", file_path,
-        "-map", "0",
         "-c:v", "libsvtav1",
-        "-pix_fmt", "yuv420p10le",
-        "-preset", "6", # Balanced; use 3 for "Ultra" compression
-        "-crf", str(crf),
-        "-svtav1-params", "tune=0:aq-mode=2",
-        "-c:a", "libopus", "-b:a", "64k", # Better compression than 'copy'
-        "-c:s", "copy",
+        "-preset", "6", 
+        "-crf", "28",
+        "-c:a", "libopus", "-b:a", "64k",
         "-progress", "pipe:1",
         "-nostats", "-y",
         output
@@ -113,26 +82,18 @@ async def encode_handler(client, message):
             if "out_time_ms=" in line:
                 out_time = int(line.split("=")[1]) / 1_000_000
                 
-                if time.time() - last_update > 8: # Throttle updates for Telegram
+                # Update status every 8 seconds to avoid Telegram flood limits
+                if time.time() - last_update > 8:
                     elapsed = time.time() - start_time
-                    percent = (out_time / duration) * 100
-                    speed = out_time / elapsed if elapsed > 0 else 0.01
-                    eta = (duration - out_time) / speed if speed > 0 else 0
-                    
-                    bar = progress_bar(percent, 20, int(elapsed))
+                    percent = (out_time / duration) * 100 if duration > 0 else 0
                     try:
-                        await status.edit(
-                            f"🎬 **Encoding:** `{os.path.basename(output)}`\n"
-                            f"[{bar}] {percent:.1f}%\n"
-                            f"⏳ {format_time(out_time)} / {format_time(duration)}\n"
-                            f"⏱ ETA: {format_time(eta)}"
-                        )
+                        await status.edit(f"🎬 **Encoding:** {percent:.1f}%")
                     except: pass
                     last_update = time.time()
 
         active_process.wait()
         
-        await status.edit("📤 Uploading...")
+        await status.edit("📤 Uploading encoded file...")
         await client.send_document(chat_id, output)
         await status.delete()
 
