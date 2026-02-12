@@ -14,11 +14,11 @@ on:
         required: false
       custom_crf:
         description: 'CRF (Default: 42)'
-        default: '28'
+        default: '42'
         required: false
       custom_preset:
         description: 'SVT-AV1 Preset (Default: 6)'
-        default: '8'
+        default: '6'
         required: false
       audio_mode:
         description: 'Audio: opus or copy'
