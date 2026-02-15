@@ -21,7 +21,7 @@ PROCESS = None
 def download_vmaf_model():
     if not os.path.exists(VMAF_MODEL_PATH):
         try:
-            r = requests.get(VMAF_MODEL_URL)
+            r = requests.get(VMAF_MODEL_URL, timeout=10)
             with open(VMAF_MODEL_PATH, "wb") as f:
                 f.write(r.content)
         except: pass
@@ -62,17 +62,18 @@ async def async_generate_grid(duration):
 def get_vmaf_score(output_file):
     download_vmaf_model()
     if not os.path.exists(VMAF_MODEL_PATH): return "Model N/A"
-    # Fallback to SSIM if libvmaf filter isn't compiled in the ffmpeg binary
+    
     cmd = [
         "ffmpeg", "-i", output_file, "-i", SOURCE, 
         "-filter_complex", f"libvmaf=model_path={VMAF_MODEL_PATH}", 
         "-f", "null", "-"
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         for line in res.stderr.split('\n'):
             if "VMAF score:" in line: return line.split("VMAF score:")[1].strip()
-    except: return "N/A (check ffmpeg build)"
+    except: pass
+    return "N/A (Filter Missing)"
 
 def select_params(height):
     if height >= 2000: return 32, 10
