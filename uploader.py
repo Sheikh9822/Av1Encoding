@@ -119,7 +119,7 @@ async def main():
     u_res = os.getenv("USER_RES")
     u_crf_raw, u_preset_raw = os.getenv("USER_CRF"), os.getenv("USER_PRESET")
     u_audio, u_bitrate = os.getenv("AUDIO_MODE", "opus"), os.getenv("AUDIO_BITRATE", "128k")
-    run_vmaf = os.getenv("RUN_VMAF", "true").lower() == "true"
+    run_ssim = os.getenv("RUN_SSIM", "true").lower() == "true"
 
     try:
         duration, height, is_hdr, total_frames, channels = get_video_info()
@@ -247,7 +247,7 @@ async def main():
             return
 
         # ENHANCEMENT: Awaited the new async SSIM function
-        ssim_val = await get_ssim(file_name) if run_vmaf else "N/A"
+        ssim_val = await get_ssim(file_name) if run_ssim else "N/A"
         
         # --- SEQUENTIAL OUTPUT START ---
         
