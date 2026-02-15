@@ -24,7 +24,9 @@ def get_video_info():
     res = json.loads(subprocess.check_output(cmd).decode())
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
     audio_stream = next((s for s in res['streams'] if s['codec_type'] == 'audio'), {})
-    channels = int(audio_stream.get('channels', 2))
+    
+    # ENHANCEMENT: Default to 0 channels to properly detect audio-less videos
+    channels = int(audio_stream.get('channels', 0))
     
     duration = float(res['format'].get('duration', 0))
     height = int(video_stream.get('height', 0))
@@ -51,13 +53,17 @@ async def async_generate_grid(duration):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-def get_ssim(output_file):
+# ENHANCEMENT: Made get_ssim fully async to prevent blocking the event loop
+async def get_ssim(output_file):
     cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", "ssim", "-f", "null", "-"]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        for line in res.stderr.split('\n'):
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _, stderr = await proc.communicate()
+        for line in stderr.decode().split('\n'):
             if "All:" in line: return line.split("All:")[1].split(" ")[0]
-    except: return "N/A"
+    except: 
+        pass
+    return "N/A"
 
 def select_params(height):
     if height >= 2000: return 32, 10
@@ -130,7 +136,10 @@ async def main():
     
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
     
-    if u_audio == "opus":
+    # ENHANCEMENT: Check for 0 channels to prevent audio-less video crashes
+    if channels == 0:
+        audio_cmd = []
+    elif u_audio == "opus":
         calc_bitrate = u_bitrate if channels <= 2 else "256k"
         audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
     else:
@@ -212,23 +221,33 @@ async def main():
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # Optimization Step
-        await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
+        # ENHANCEMENT: Swapped FFmpeg for mkvmerge to preserve attachments/fonts perfectly
+        await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{file_name}"
-        remux_cmd = ["ffmpeg", "-i", file_name, "-i", SOURCE, "-map", "0", "-map", "1:t?", "-c", "copy", "-map_metadata", "0", fixed_file, "-y"]
-        subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        remux_cmd = [
+            "mkvmerge", "-o", fixed_file, 
+            file_name, 
+            "--no-video", "--no-audio", "--no-subtitles", SOURCE
+        ]
+        
+        remux_proc = await asyncio.create_subprocess_exec(*remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await remux_proc.communicate()
+
         if os.path.exists(fixed_file):
             os.remove(file_name)
             os.rename(fixed_file, file_name)
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        if final_size > 2000:
-            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 2GB. Sending Log only.")
+        # ENHANCEMENT: Lowered 2000 to 1990 for a safer buffer against Telegram limits
+        if final_size > 1990:
+            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 1.95GB limit. Sending Log only.")
             await app.send_document(chat_id, LOG_FILE)
             return
 
-        ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
+        # ENHANCEMENT: Awaited the new async SSIM function
+        ssim_val = await get_ssim(file_name) if run_vmaf else "N/A"
         
         # --- SEQUENTIAL OUTPUT START ---
         
