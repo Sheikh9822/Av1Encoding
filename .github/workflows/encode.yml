@@ -63,14 +63,6 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
-      - name: 💾 Restore Telegram Session
-        uses: actions/cache@v4
-        with:
-          path: uploader.session
-          key: tg-session-v1
-          restore-keys: |
-            tg-session-
-
       - name: 📥 Universal Download Core & Name Extraction
         run: |
           URL="${{ github.event.inputs.video_url }}"
