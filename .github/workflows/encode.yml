@@ -29,8 +29,8 @@ on:
         description: 'Opus Bitrate (128k, 160k, 192k)'
         default: '128k'
         required: false
-      run_vmaf:
-        description: 'Calculate Quality Score? (true/false)'
+      run_ssim:
+        description: 'Calculate SSIM Quality Score? (true/false)'
         default: 'true'
         required: false
 
@@ -77,5 +77,5 @@ jobs:
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
-          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          RUN_SSIM: ${{ github.event.inputs.run_ssim }}
         run: python uploader.py
