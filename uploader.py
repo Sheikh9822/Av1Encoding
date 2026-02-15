@@ -51,9 +51,15 @@ async def async_generate_grid(duration):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-# ENHANCEMENT: True VMAF via libvmaf
-async def get_vmaf(output_file):
-    cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", "libvmaf", "-f", "null", "-"]
+# ENHANCEMENT: VMAF Dimension Mismatch Patch
+async def get_vmaf(output_file, vf_string=""):
+    # If cropped/scaled, apply identical filter to the reference video before comparison
+    if vf_string:
+        filter_graph = f"[1:v]{vf_string}[ref];[0:v][ref]libvmaf"
+    else:
+        filter_graph = "libvmaf"
+        
+    cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", filter_graph, "-f", "null", "-"]
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         _, stderr = await proc.communicate()
@@ -175,7 +181,6 @@ async def main():
     else:
         audio_cmd = ["-c:a", "copy"]
 
-    # ENHANCEMENT: Inject synthetic grain parameter if requested
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
@@ -274,7 +279,9 @@ async def main():
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        vmaf_val = await get_vmaf(file_name) if run_vmaf else "N/A"
+        # Pass the exact crop/scale parameters to VMAF to prevent dimension mismatch
+        vf_string = ",".join(vf_filters) if vf_filters else ""
+        vmaf_val = await get_vmaf(file_name, vf_string) if run_vmaf else "N/A"
         
         if final_size > 1990:
             await app.edit_message_text(chat_id, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
