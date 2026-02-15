@@ -40,31 +40,38 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - [span_1](start_span)uses: actions/checkout@v4[span_1](end_span)
+      
+      - name: 🐍 Setup Python
+        [span_2](start_span)uses: actions/setup-python@v5[span_2](end_span)
         with:
           python-version: '3.10'
           
-      - name: 🛠 Install Dependencies
+      - name: 🛠 Install Static FFmpeg (Includes VMAF)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
-          pip install -r requirements.txt
+          wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz
+          tar xvf ffmpeg-git-amd64-static.tar.xz
+          # Move binaries to a location in PATH
+          sudo mv ffmpeg-git-*-amd64-static/ffmpeg /usr/local/bin/
+          sudo mv ffmpeg-git-*-amd64-static/ffprobe /usr/local/bin/
+          # Verify installation
+          ffmpeg -version
+          [span_3](start_span)pip install -r requirements.txt[span_3](end_span)
 
       - name: 📥 Download Source
-        run: curl --globoff -L -o "source.mkv" "${{ github.event.inputs.video_url }}"
+        [span_4](start_span)run: curl --globoff -L -o "source.mkv" "${{ github.event.inputs.video_url }}"[span_4](end_span)
 
       - name: 🚀 Execute Sci-Fi Encoder
         env:
-          API_ID: ${{ secrets.TG_API_ID }}
-          API_HASH: ${{ secrets.TG_API_HASH }}
-          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
-          USER_RES: ${{ github.event.inputs.res_choice }}
-          USER_CRF: ${{ github.event.inputs.custom_crf }}
-          USER_PRESET: ${{ github.event.inputs.custom_preset }}
-          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
-          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
-          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-        run: python uploader.py
+          [span_5](start_span)API_ID: ${{ secrets.TG_API_ID }}[span_5](end_span)
+          [span_6](start_span)API_HASH: ${{ secrets.TG_API_HASH }}[span_6](end_span)
+          [span_7](start_span)BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}[span_7](end_span)
+          [span_8](start_span)CHAT_ID: ${{ secrets.TG_CHAT_ID }}[span_8](end_span)
+          [span_9](start_span)FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"[span_9](end_span)
+          [span_10](start_span)USER_RES: ${{ github.event.inputs.res_choice }}[span_10](end_span)
+          [span_11](start_span)USER_CRF: ${{ github.event.inputs.custom_crf }}[span_11](end_span)
+          [span_12](start_span)USER_PRESET: ${{ github.event.inputs.custom_preset }}[span_12](end_span)
+          [span_13](start_span)AUDIO_MODE: ${{ github.event.inputs.audio_mode }}[span_13](end_span)
+          [span_14](start_span)AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}[span_14](end_span)
+          [span_15](start_span)RUN_VMAF: ${{ github.event.inputs.run_vmaf }}[span_15](end_span)
+        [span_16](start_span)run: python uploader.py[span_16](end_span)
