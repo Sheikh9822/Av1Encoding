@@ -1,15 +1,15 @@
 name: Encode and Send
-run-name: "Encoding: ${{ github.event.inputs.custom_name }}"
+run-name: "Encoding: ${{ github.event.inputs.custom_name || 'Auto-Extracted File' }}"
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct Link to Video'
+        description: 'Direct Link, YouTube URL, or Magnet Link'
         required: true
       custom_name:
-        description: 'Output Filename (without extension)'
-        required: true
+        description: 'Output Filename (Optional - Leave blank to auto-detect)'
+        required: false
       res_choice:
         description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
         required: false
@@ -49,9 +49,8 @@ jobs:
       - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
-          # Added mkvtoolnix for better attachment/font handling
-          sudo apt-get install -y ffmpeg curl mkvtoolnix
-          pip install -r requirements.txt
+          sudo apt-get install -y ffmpeg curl mkvtoolnix aria2
+          pip install -r requirements.txt yt-dlp
 
       - name: 💾 Restore Telegram Session
         uses: actions/cache@v4
@@ -61,9 +60,39 @@ jobs:
           restore-keys: |
             tg-session-
 
-      - name: 📥 Download Source
-        # Added --retry to handle transient network drops during download
-        run: curl --globoff -L --retry 3 -o "source.mkv" "${{ github.event.inputs.video_url }}"
+      - name: 📥 Universal Download & Auto-Naming
+        id: downloader
+        run: |
+          URL="${{ github.event.inputs.video_url }}"
+          CUSTOM="${{ github.event.inputs.custom_name }}"
+          
+          if [[ "$URL" == magnet:* ]]; then
+            echo "🧲 Magnet link detected..."
+            mkdir -p dl_temp
+            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --dir=./dl_temp "$URL"
+            # Find the largest file (the actual video)
+            ORIG_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
+            EXTRACTED=$(basename "$ORIG_FILE")
+            EXTRACTED="${EXTRACTED%.*}" # Strip extension
+            mv "$ORIG_FILE" ./source.mkv
+          else
+            echo "🌐 Video URL detected..."
+            # Extract title using yt-dlp without downloading yet
+            EXTRACTED=$(yt-dlp --no-playlist --print filename -o "%(title)s" "$URL" | head -n 1)
+            # Actually download the file
+            yt-dlp --no-playlist --merge-output-format mkv -o "source.mkv" "$URL"
+          fi
+
+          # Fallback logic: Use Custom if provided, else Extracted, else default
+          FINAL_NAME="${CUSTOM:-$EXTRACTED}"
+          FINAL_NAME="${FINAL_NAME:-Unknown_Video}"
+          
+          # Clean filename to prevent Linux/Telegram errors (keeps alphanumeric, dots, dashes, underscores)
+          FINAL_NAME=$(echo "$FINAL_NAME" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+          
+          echo "Title locked in as: $FINAL_NAME"
+          # Export to environment for the next step
+          echo "FILE_TITLE=$FINAL_NAME" >> $GITHUB_ENV
 
       - name: 🚀 Execute Sci-Fi Encoder
         env:
@@ -71,7 +100,8 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          FILE_NAME: "${{ github.event.inputs.custom_name }}.mkv"
+          # Use the newly extracted variable here:
+          FILE_NAME: "${{ env.FILE_TITLE }}.mkv"
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
