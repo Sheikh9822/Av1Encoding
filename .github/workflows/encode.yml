@@ -68,6 +68,10 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
       - name: 📥 Universal Download Core & Name Extraction
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
@@ -75,7 +79,6 @@ jobs:
           if [[ "$URL" == magnet:* ]]; then
             echo "🧲 Magnet link detected. Engaging aria2c at MAX speed..."
             mkdir -p dl_temp
-            # Maxed out aria2c params for torrents/magnets
             aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --min-split-size=1M --dir=./dl_temp "$URL"
             
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
@@ -88,6 +91,32 @@ jobs:
             fi
             mv "$DL_FILE" ./source.mkv
             
+          elif [[ "$URL" == tg_file:* ]]; then
+            echo "📱 Telegram File detected. Engaging Pyrogram MTProto Downloader..."
+            FILE_ID=$(echo "$URL" | sed 's/tg_file://' | cut -d'|' -f1)
+            RAW_NAME=$(echo "$URL" | cut -d'|' -f2)
+            
+            if [ -z "$CUSTOM" ]; then
+              FINAL_NAME="${RAW_NAME%.*}.mkv"
+            else
+              FINAL_NAME="${CUSTOM}.mkv"
+            fi
+            
+            export FILE_ID
+            cat << 'EOF' > tg_dl.py
+import asyncio, os
+from pyrogram import Client
+
+async def main():
+    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])
+    async with app:
+        print(f"⬇️ Downloading file from Telegram (up to 2GB)...")
+        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")
+
+asyncio.run(main())
+EOF
+            python3 tg_dl.py
+            
           else
             echo "🌐 Standard/Video URL detected. Engaging yt-dlp with MAX aria2c acceleration..."
             if [ -z "$CUSTOM" ]; then
@@ -97,7 +126,6 @@ jobs:
               FINAL_NAME="${CUSTOM}.mkv"
             fi
             
-            # Using aria2c as external downloader maxed out to 16 connections and 1M chunks
             yt-dlp \
               --downloader aria2c \
               --downloader-args aria2c:"-x 16 -s 16 -k 1M" \
