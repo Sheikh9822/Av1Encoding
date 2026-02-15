@@ -3,9 +3,13 @@ import os
 import subprocess
 import time
 import json
+import uvloop
 from datetime import timedelta
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
+
+# High-performance event loop for Linux runners
+uvloop.install()
 
 SOURCE = "source.mkv"
 SCREENSHOT = "grid_preview.jpg"
@@ -19,8 +23,6 @@ def get_video_info():
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", SOURCE]
     res = json.loads(subprocess.check_output(cmd).decode())
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
-    
-    # Enhanced: Track audio channels for bitrate scaling
     audio_stream = next((s for s in res['streams'] if s['codec_type'] == 'audio'), {})
     channels = int(audio_stream.get('channels', 2))
     
@@ -44,14 +46,12 @@ async def async_generate_grid(duration):
     loop = asyncio.get_event_loop()
     def sync_grid():
         interval = duration / 10
-        # Enhanced: Better frame selection to avoid black frames
         select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
         cmd = ["ffmpeg", "-i", SOURCE, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
 def get_ssim(output_file):
-    # Added threads to SSIM calculation to speed up the final report
     cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", "ssim", "-f", "null", "-"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -73,7 +73,8 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
     
-    if now - last_up_update < 10:
+    # Refresh every 8 seconds for a snappier UI
+    if now - last_up_update < 8:
         return
         
     percent = (current / total) * 100
@@ -95,6 +96,8 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     try:
         await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
         last_up_update = now
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
     except:
         pass
 
@@ -127,7 +130,6 @@ async def main():
     
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
     
-    # Enhanced: Auto-scale audio bitrate for Surround Sound
     if u_audio == "opus":
         calc_bitrate = u_bitrate if channels <= 2 else "256k"
         audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
@@ -145,7 +147,7 @@ async def main():
 
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
-        # Enhanced: Added threads and tile-columns for faster encoding on GH Actions
+        # Optimized AV1 Command for GH Actions Runners
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *scale_filter,
@@ -173,7 +175,7 @@ async def main():
                         fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
                         eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                         
-                        if time.time() - last_update > 25:
+                        if time.time() - last_update > 8:
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
                             scifi_ui = (
@@ -193,8 +195,13 @@ async def main():
                                 f"│                                    \n"
                                 f"└────────────────────────────────────┘</code>"
                             )
-                            await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
-                            last_update = time.time()
+                            try:
+                                await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
+                                last_update = time.time()
+                            except FloodWait as e:
+                                await asyncio.sleep(e.value)
+                                last_update = time.time() + e.value
+                            except: continue
                     except: continue
 
         PROCESS.wait()
@@ -205,15 +212,10 @@ async def main():
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
+        # Optimization Step
         await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{file_name}"
-        
-        # Enhanced: Added -map 1:t? to keep subtitle fonts/attachments
-        remux_cmd = [
-            "ffmpeg", "-i", file_name, "-i", SOURCE, 
-            "-map", "0", "-map", "1:t?", 
-            "-c", "copy", "-map_metadata", "0", fixed_file, "-y"
-        ]
+        remux_cmd = ["ffmpeg", "-i", file_name, "-i", SOURCE, "-map", "0", "-map", "1:t?", "-c", "copy", "-map_metadata", "0", fixed_file, "-y"]
         subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(fixed_file):
             os.remove(file_name)
@@ -221,18 +223,21 @@ async def main():
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        # Enhanced: Telegram 2GB Limit Check
         if final_size > 2000:
-            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 2GB. Transmitting Log only.")
+            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 2GB. Sending Log only.")
             await app.send_document(chat_id, LOG_FILE)
             return
 
         ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         
+        # --- SEQUENTIAL OUTPUT START ---
+        
+        # 1. Send Grid First
         if os.path.exists(SCREENSHOT):
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
+        # 2. Compile Report
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
@@ -245,6 +250,7 @@ async def main():
             f"└ <b>Audio:</b> {u_audio.upper()} @ {u_bitrate}"
         )
 
+        # 3. Send Document with Progress
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
@@ -254,6 +260,8 @@ async def main():
             progress_args=(app, chat_id, status, file_name)
         )
         
+        # --- SEQUENTIAL OUTPUT END ---
+
         try:
             await status.delete()
         except:
