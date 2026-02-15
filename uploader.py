@@ -51,14 +51,32 @@ async def async_generate_grid(duration):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-# ENHANCEMENT: VMAF Dimension Mismatch Patch
-async def get_vmaf(output_file, vf_string=""):
-    # If cropped/scaled, apply identical filter to the reference video before comparison
-    if vf_string:
-        filter_graph = f"[1:v]{vf_string}[ref];[0:v][ref]libvmaf"
-    else:
-        filter_graph = "libvmaf"
+# ENHANCEMENT: Fast VMAF Sampling (30 seconds spread across 6 parts)
+async def get_vmaf(output_file, vf_string="", duration=0):
+    if duration > 30:
+        interval = duration / 6
+        select_parts = []
+        for i in range(6):
+            # Grab exactly 5 seconds from the middle of each of the 6 intervals
+            start_t = (i * interval) + (interval / 2) - 2.5
+            end_t = start_t + 5
+            select_parts.append(f"between(t,{start_t},{end_t})")
         
+        select_expr = "+".join(select_parts)
+        select_filter = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
+        
+        # Apply the crop/scale AND the 6-part time slice to both videos
+        if vf_string:
+            filter_graph = f"[1:v]{vf_string},{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
+        else:
+            filter_graph = f"[1:v]{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
+    else:
+        # Fallback for very short videos (under 30 seconds)
+        if vf_string:
+            filter_graph = f"[1:v]{vf_string}[ref];[0:v][ref]libvmaf"
+        else:
+            filter_graph = "libvmaf"
+            
     cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", filter_graph, "-f", "null", "-"]
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -279,9 +297,13 @@ async def main():
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        # Pass the exact crop/scale parameters to VMAF to prevent dimension mismatch
+        # --- NEW UI UPDATE FOR VMAF ---
         vf_string = ",".join(vf_filters) if vf_filters else ""
-        vmaf_val = await get_vmaf(file_name, vf_string) if run_vmaf else "N/A"
+        if run_vmaf:
+            await app.edit_message_text(chat_id, status.id, "🧠 <b>[ SYSTEM.ANALYSIS ] Calculating VMAF Score (Rapid 30s Sample)...</b>", parse_mode=enums.ParseMode.HTML)
+            vmaf_val = await get_vmaf(file_name, vf_string, duration)
+        else:
+            vmaf_val = "N/A"
         
         if final_size > 1990:
             await app.edit_message_text(chat_id, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
