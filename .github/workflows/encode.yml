@@ -9,7 +9,7 @@ on:
         description: 'Dashboard Display Title'
         required: false
       video_url:
-        description: 'Direct Link, YouTube URL, or Magnet Link'
+        description: 'Direct Link, YouTube URL, Magnet Link, or tg:// ID'
         required: true
       custom_name:
         description: 'Output Filename (Leave empty to auto-extract from URL)'
@@ -68,14 +68,59 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
       - name: 📥 Universal Download Core & Name Extraction
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
-          if [[ "$URL" == magnet:* ]]; then
+          if [[ "$URL" == tg://* ]]; then
+            echo "📲 Telegram internal file detected. Engaging Pyrogram to download..."
+            export MSG_ID="${URL#tg://}"
+            
+            # Write a temporary python script to intercept the file natively using Pyrogram
+            cat << 'EOF' > tg_dl.py
+            import asyncio, os
+            from pyrogram import Client
+            async def main():
+                api_id = int(os.environ["API_ID"])
+                api_hash = os.environ["API_HASH"]
+                bot_token = os.environ["BOT_TOKEN"]
+                chat_id = int(os.environ["CHAT_ID"])
+                msg_id = int(os.environ["MSG_ID"])
+                
+                app = Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+                async with app:
+                    msg = await app.get_messages(chat_id, msg_id)
+                    fname = "telegram_video.mkv"
+                    if msg.video and getattr(msg.video, 'file_name', None):
+                        fname = msg.video.file_name
+                    elif msg.document and getattr(msg.document, 'file_name', None):
+                        fname = msg.document.file_name
+                    print(f"FILE_NAME_EXTRACTED={fname}")
+                    await msg.download(file_name="source.mkv")
+            asyncio.run(main())
+            EOF
+            
+            OUT=$(python tg_dl.py)
+            EXTRACTED=$(echo "$OUT" | sed -n 's/^FILE_NAME_EXTRACTED=//p')
+            
+            if [ -z "$CUSTOM" ]; then
+              if [ -z "$EXTRACTED" ]; then
+                FINAL_NAME="telegram_video.mkv"
+              else
+                FINAL_NAME="${EXTRACTED%.*}.mkv"
+              fi
+            else
+              FINAL_NAME="${CUSTOM}.mkv"
+            fi
+            
+          elif [[ "$URL" == magnet:* ]]; then
             echo "🧲 Magnet link detected. Engaging aria2c at MAX speed..."
             mkdir -p dl_temp
-            # Maxed out aria2c params for torrents/magnets
             aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --min-split-size=1M --dir=./dl_temp "$URL"
             
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
@@ -97,7 +142,6 @@ jobs:
               FINAL_NAME="${CUSTOM}.mkv"
             fi
             
-            # Using aria2c as external downloader maxed out to 16 connections and 1M chunks
             yt-dlp \
               --downloader aria2c \
               --downloader-args aria2c:"-x 16 -s 16 -k 1M" \
