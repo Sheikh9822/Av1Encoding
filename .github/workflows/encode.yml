@@ -37,21 +37,11 @@ on:
 jobs:
   encode:
     runs-on: ubuntu-latest
-    [span_0](start_span)timeout-minutes: 360  # Maximum allowed by GitHub Actions[span_0](end_span)
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
-      
-      - name: 🛠 Maximize Runner Space
-        # Removes pre-installed bloat to give you ~30GB+ of free space for large 4K sources
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -59,7 +49,8 @@ jobs:
       - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
+          # Added mkvtoolnix for better attachment/font handling
+          sudo apt-get install -y ffmpeg curl mkvtoolnix
           pip install -r requirements.txt
 
       - name: 💾 Restore Telegram Session
@@ -71,8 +62,8 @@ jobs:
             tg-session-
 
       - name: 📥 Download Source
-        # Added --continue-at - and --retry for more stable downloads of large files
-        run: curl --globoff -L -C - --retry 5 -o "source.mkv" "${{ github.event.inputs.video_url }}"
+        # Added --retry to handle transient network drops during download
+        run: curl --globoff -L --retry 3 -o "source.mkv" "${{ github.event.inputs.video_url }}"
 
       - name: 🚀 Execute Sci-Fi Encoder
         env:
