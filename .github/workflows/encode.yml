@@ -73,9 +73,10 @@ jobs:
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
           if [[ "$URL" == magnet:* ]]; then
-            echo "🧲 Magnet link detected. Engaging aria2c..."
+            echo "🧲 Magnet link detected. Engaging aria2c at MAX speed..."
             mkdir -p dl_temp
-            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --dir=./dl_temp "$URL"
+            # Maxed out aria2c params for torrents/magnets
+            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --min-split-size=1M --dir=./dl_temp "$URL"
             
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
             
@@ -88,15 +89,20 @@ jobs:
             mv "$DL_FILE" ./source.mkv
             
           else
-            echo "🌐 Standard/Video URL detected. Engaging yt-dlp..."
+            echo "🌐 Standard/Video URL detected. Engaging yt-dlp with MAX aria2c acceleration..."
             if [ -z "$CUSTOM" ]; then
-              # FIX: Removed --restrict-filenames so brackets and spaces are preserved
               FETCHED_TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
               FINAL_NAME="${FETCHED_TITLE}.mkv"
             else
               FINAL_NAME="${CUSTOM}.mkv"
             fi
-            yt-dlp --merge-output-format mkv -o "source.mkv" "$URL"
+            
+            # Using aria2c as external downloader maxed out to 16 connections and 1M chunks
+            yt-dlp \
+              --downloader aria2c \
+              --downloader-args aria2c:"-x 16 -s 16 -k 1M" \
+              --merge-output-format mkv \
+              -o "source.mkv" "$URL"
           fi
           
           echo "✅ Selected Filename: $FINAL_NAME"
