@@ -23,13 +23,15 @@ def get_video_info():
     
     channels = int(audio_stream.get('channels', 0))
     duration = float(res['format'].get('duration', 0))
+    width = int(video_stream.get('width', 0))
     height = int(video_stream.get('height', 0))
     fps_raw = video_stream.get('r_frame_rate', '24/1')
     fps_val = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
     total_frames = int(video_stream.get('nb_frames', duration * fps_val))
     is_hdr = 'bt2020' in video_stream.get('color_primaries', 'bt709')
     
-    return duration, height, is_hdr, total_frames, channels, fps_val
+    # ENHANCEMENT: Added width so we can calculate proper upscaling dimensions
+    return duration, width, height, is_hdr, total_frames, channels, fps_val
 
 def generate_progress_bar(percentage):
     total_segments = 15
@@ -39,16 +41,26 @@ def generate_progress_bar(percentage):
 def format_time(seconds):
     return str(timedelta(seconds=int(seconds))).zfill(8)
 
-async def async_generate_grid(duration):
+async def async_generate_grid(duration, target_file):
     loop = asyncio.get_event_loop()
     def sync_grid():
         interval = duration / 10
         select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
-        cmd = ["ffmpeg", "-i", SOURCE, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"]
+        cmd = ["ffmpeg", "-i", target_file, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-async def get_vmaf(output_file, vf_string="", duration=0, fps=24, app=None, chat_id=None, status_msg=None):
+# ENHANCEMENT: True Dimension Alignment + Dual Metric Extraction (VMAF & SSIM)
+async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app=None, chat_id=None, status_msg=None):
+    
+    # Calculate the exact dimensions of the pristine cropped reference video
+    ref_w, ref_h = width, height
+    if crop_val:
+        try:
+            parts = crop_val.split(':')
+            ref_w, ref_h = parts[0], parts[1]
+        except: pass
+
     if duration > 30:
         interval = duration / 6
         select_parts = []
@@ -59,35 +71,40 @@ async def get_vmaf(output_file, vf_string="", duration=0, fps=24, app=None, chat
         
         select_expr = "+".join(select_parts)
         select_filter = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
-        
-        if vf_string:
-            filter_graph = f"[1:v]{vf_string},{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
-        else:
-            filter_graph = f"[1:v]{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
-            
         total_vmaf_frames = int(30 * fps)
     else:
-        if vf_string:
-            filter_graph = f"[1:v]{vf_string}[ref];[0:v][ref]libvmaf"
-        else:
-            filter_graph = "libvmaf"
+        select_filter = "setpts=N/FRAME_RATE/TB"
         total_vmaf_frames = int(duration * fps)
-        
+
+    # 1. Apply ONLY crop to the reference video
+    ref_filters = f"crop={crop_val},{select_filter}" if crop_val else select_filter
+    
+    # 2. Force the encoded video to stretch UP to match the pristine reference dimensions
+    dist_filters = f"{select_filter},scale={ref_w}:{ref_h}:flags=bicubic"
+
+    # 3. Use FFmpeg split=2 to run BOTH libvmaf and SSIM filters simultaneously
+    filter_graph = (
+        f"[1:v]{ref_filters}[r];"
+        f"[0:v]{dist_filters}[d];"
+        f"[d]split=2[d1][d2];"
+        f"[r]split=2[r1][r2];"
+        f"[d1][r1]libvmaf;"
+        f"[d2][r2]ssim"
+    )
+
     cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", filter_graph, "-progress", "pipe:1", "-nostats", "-f", "null", "-"]
     
-    vmaf_score = "N/A"
+    vmaf_score, ssim_score = "N/A", "N/A"
     
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        start_time = time.time()
-        last_update = 0
+        start_time, last_update = time.time(), 0
         
         async def read_progress():
             nonlocal last_update
             while True:
                 line = await proc.stdout.readline()
-                if not line:
-                    break
+                if not line: break
                 line_str = line.decode().strip()
                 if line_str.startswith("frame="):
                     try:
@@ -99,12 +116,12 @@ async def get_vmaf(output_file, vf_string="", duration=0, fps=24, app=None, chat
                             elapsed = now - start_time
                             speed = curr_frame / elapsed if elapsed > 0 else 0
                             eta = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
-                            
                             bar = generate_progress_bar(percent)
+                            
                             ui = (
-                                f"<code>┌─── 🧠 [ SYSTEM.ANALYSIS.VMAF ] ───┐\n"
+                                f"<code>┌─── 🧠 [ SYSTEM.ANALYSIS ] ───┐\n"
                                 f"│                                    \n"
-                                f"│ 🔬 SCORING: Rapid 30s Sample\n"
+                                f"│ 🔬 METRICS: VMAF + SSIM (30s)\n"
                                 f"│ 📊 PROG: {bar} {percent:.1f}%\n"
                                 f"│ ⚡ SPEED: {speed:.1f} FPS\n"
                                 f"│ ⏳ ETA: {format_time(eta)}\n"
@@ -114,30 +131,30 @@ async def get_vmaf(output_file, vf_string="", duration=0, fps=24, app=None, chat
                             try:
                                 await app.edit_message_text(chat_id, status_msg.id, ui, parse_mode=enums.ParseMode.HTML)
                                 last_update = now
-                            except FloodWait as e:
-                                await asyncio.sleep(e.value)
-                            except:
-                                pass
-                    except:
-                        pass
+                            except FloodWait as e: await asyncio.sleep(e.value)
+                            except: pass
+                    except: pass
 
         async def read_stderr():
-            nonlocal vmaf_score
+            nonlocal vmaf_score, ssim_score
             while True:
                 line = await proc.stderr.readline()
-                if not line:
-                    break
+                if not line: break
                 line_str = line.decode('utf-8', errors='ignore').strip()
+                
                 if "VMAF score:" in line_str:
                     vmaf_score = line_str.split("VMAF score:")[1].strip()
+                if "SSIM Y:" in line_str and "All:" in line_str:
+                    try: ssim_score = line_str.split("All:")[1].split(" ")[0]
+                    except: pass
 
         await asyncio.gather(read_progress(), read_stderr())
         await proc.wait()
-        return vmaf_score
+        return vmaf_score, ssim_score
         
     except Exception as e:
-        print(f"VMAF Capture Error: {e}")
-        return "N/A"
+        print(f"Metrics Capture Error: {e}")
+        return "N/A", "N/A"
 
 def get_crop_params():
     cmd = [
@@ -216,7 +233,8 @@ async def main():
     run_vmaf = os.getenv("RUN_VMAF", "true").lower() == "true"
 
     try:
-        duration, height, is_hdr, total_frames, channels, fps_val = get_video_info()
+        # Added width extraction
+        duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
         return
@@ -225,10 +243,8 @@ async def main():
     final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
     final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
     
-    try:
-        grain_val = int(u_grain_raw)
-    except:
-        grain_val = 0
+    try: grain_val = int(u_grain_raw)
+    except: grain_val = 0
     
     res_label = u_res if u_res else f"{height}p"
     hdr_label = "HDR10" if is_hdr else "SDR"
@@ -236,20 +252,16 @@ async def main():
     
     crop_val = get_crop_params()
     vf_filters = []
-    if crop_val:
-        vf_filters.append(f"crop={crop_val}")
-    if u_res:
-        vf_filters.append(f"scale=-2:{u_res}")
+    if crop_val: vf_filters.append(f"crop={crop_val}")
+    if u_res: vf_filters.append(f"scale=-2:{u_res}")
         
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
     
-    if channels == 0:
-        audio_cmd = []
+    if channels == 0: audio_cmd = []
     elif u_audio == "opus":
         calc_bitrate = u_bitrate if channels <= 2 else "256k"
         audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
-    else:
-        audio_cmd = ["-c:a", "copy"]
+    else: audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
@@ -261,8 +273,6 @@ async def main():
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
             status = await app.send_message(chat_id, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
-
-        grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
@@ -294,7 +304,6 @@ async def main():
                         if time.time() - last_update > 8:
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
-                            
                             crop_label = f" | Cropped" if crop_val else ""
                             
                             scifi_ui = (
@@ -325,7 +334,6 @@ async def main():
 
         PROCESS.wait()
         total_mission_time = time.time() - start_time
-        await grid_task
 
         if PROCESS.returncode != 0:
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
@@ -348,11 +356,15 @@ async def main():
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        vf_string = ",".join(vf_filters) if vf_filters else ""
+        grid_task = asyncio.create_task(async_generate_grid(duration, file_name))
+        
+        # Pass width, height, and crop_val to enable proper Upscale-Alignment
         if run_vmaf:
-            vmaf_val = await get_vmaf(file_name, vf_string, duration, fps_val, app, chat_id, status)
+            vmaf_val, ssim_val = await get_vmaf(file_name, crop_val, width, height, duration, fps_val, app, chat_id, status)
         else:
-            vmaf_val = "N/A"
+            vmaf_val, ssim_val = "N/A", "N/A"
+            
+        await grid_task
         
         if final_size > 1990:
             await app.edit_message_text(chat_id, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
@@ -362,7 +374,7 @@ async def main():
                 f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL (OVERFLOW)</b>\n\n"
                 f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
                 f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code> (Exceeds Telegram limit)\n"
-                f"📊 <b>VMAF:</b> <code>{vmaf_val}</code>\n\n"
+                f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
                 f"☁️ <b>EXTERNAL UPLINK (Valid 3 days):</b>\n{cloud_url}\n\n"
                 f"<i>Sending process logs below.</i>"
             )
@@ -370,7 +382,6 @@ async def main():
             await app.send_document(chat_id, LOG_FILE)
             return
         
-        # --- ENHANCEMENT: VISUAL ANCHOR (REPLY BINDING) ---
         photo_msg = None
         if os.path.exists(SCREENSHOT):
             photo_msg = await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
@@ -381,7 +392,7 @@ async def main():
             f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
             f"⏱ <b>ENCODE TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
             f"📦 <b>FINAL SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"📊 <b>VMAF:</b> <code>{vmaf_val}</code>\n\n"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
             f"🛠 <b>ENCODE SPECS:</b>\n"
             f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
             f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label} | 10-bit{grain_label}\n"
@@ -395,7 +406,7 @@ async def main():
             document=file_name, 
             caption=report,
             parse_mode=enums.ParseMode.HTML,
-            reply_to_message_id=photo_msg.id if photo_msg else None, # Formats video as reply to the grid
+            reply_to_message_id=photo_msg.id if photo_msg else None,
             progress=upload_progress,
             progress_args=(app, chat_id, status, file_name)
         )
