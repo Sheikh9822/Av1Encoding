@@ -252,11 +252,9 @@ async def main():
         audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
-    # ENHANCEMENT: Bypass the extremely slow denoising step while keeping the grain synthesis
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    # ENHANCEMENT: :memory: session prevents Telegram AuthKey clashes when running batch jobs
     async with Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
         try:
             status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
@@ -372,8 +370,10 @@ async def main():
             await app.send_document(chat_id, LOG_FILE)
             return
         
+        # --- ENHANCEMENT: VISUAL ANCHOR (REPLY BINDING) ---
+        photo_msg = None
         if os.path.exists(SCREENSHOT):
-            await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
+            photo_msg = await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
         report = (
@@ -395,6 +395,7 @@ async def main():
             document=file_name, 
             caption=report,
             parse_mode=enums.ParseMode.HTML,
+            reply_to_message_id=photo_msg.id if photo_msg else None, # Formats video as reply to the grid
             progress=upload_progress,
             progress_args=(app, chat_id, status, file_name)
         )
