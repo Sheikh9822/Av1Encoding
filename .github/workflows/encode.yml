@@ -1,88 +1,11 @@
-name: Encode and Send
-# Look for ui_title first, fallback to custom_name, then Auto-Detected
-run-name: "Encoding: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected File' }}"
-
-on:
-  workflow_dispatch:
-    inputs:
-      ui_title:
-        description: 'Dashboard Display Title'
-        required: false
-      video_url:
-        description: 'Direct Link, YouTube URL, Magnet Link, or tg:// ID'
-        required: true
-      custom_name:
-        description: 'Output Filename (Leave empty to auto-extract from URL)'
-        required: false
-      res_choice:
-        description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
-        required: false
-      custom_crf:
-        description: 'CRF (Default: 42)'
-        default: '42'
-        required: false
-      custom_preset:
-        description: 'SVT-AV1 Preset (Default: 6)'
-        default: '6'
-        required: false
-      film_grain:
-        description: 'Synthetic Grain (0 to 50, 0 = Disabled)'
-        default: '0'
-        required: false
-      audio_mode:
-        description: 'Audio: opus or copy'
-        default: 'opus'
-        required: false
-      audio_bitrate:
-        description: 'Opus Bitrate (128k, 160k, 192k)'
-        default: '128k'
-        required: false
-      run_vmaf:
-        description: 'Calculate True VMAF Quality Score? (true/false)'
-        default: 'true'
-        required: false
-
-jobs:
-  encode:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-          
-      - name: 🛠 Install Dependencies & Static FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl mkvtoolnix aria2
-          pip install -r requirements.txt yt-dlp
-          
-          # Download a specialized static FFmpeg build with libvmaf pre-compiled
-          echo "⬇️ Downloading Static FFmpeg with libvmaf..."
-          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
-          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
-          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
-
       - name: 📥 Universal Download Core & Name Extraction
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          URL="${{ github.event.inputs.video_url }}"
-          CUSTOM="${{ github.event.inputs.custom_name }}"
-          
-          if [[ "$URL" == tg://* ]]; then
-            echo "📲 Telegram internal file detected. Engaging Pyrogram to download..."
-            export MSG_ID="${URL#tg://}"
-            
-            # Write a temporary python script to intercept the file natively using Pyrogram
-            cat << 'EOF' > tg_dl.py
+          # Storing the Python script safely as an environment variable to avoid YAML indentation errors
+          TG_DL_SCRIPT: |
             import asyncio, os
             from pyrogram import Client
             async def main():
@@ -103,8 +26,16 @@ jobs:
                     print(f"FILE_NAME_EXTRACTED={fname}")
                     await msg.download(file_name="source.mkv")
             asyncio.run(main())
-            EOF
+        run: |
+          URL="${{ github.event.inputs.video_url }}"
+          CUSTOM="${{ github.event.inputs.custom_name }}"
+          
+          if [[ "$URL" == tg://* ]]; then
+            echo "📲 Telegram internal file detected. Engaging Pyrogram to download..."
+            export MSG_ID="${URL#tg://}"
             
+            # Write the script from the environment variable and run it
+            echo "$TG_DL_SCRIPT" > tg_dl.py
             OUT=$(python tg_dl.py)
             EXTRACTED=$(echo "$OUT" | sed -n 's/^FILE_NAME_EXTRACTED=//p')
             
@@ -151,18 +82,3 @@ jobs:
           
           echo "✅ Selected Filename: $FINAL_NAME"
           echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
-
-      - name: 🚀 Execute Sci-Fi Encoder
-        env:
-          API_ID: ${{ secrets.TG_API_ID }}
-          API_HASH: ${{ secrets.TG_API_HASH }}
-          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          USER_RES: ${{ github.event.inputs.res_choice }}
-          USER_CRF: ${{ github.event.inputs.custom_crf }}
-          USER_PRESET: ${{ github.event.inputs.custom_preset }}
-          USER_GRAIN: ${{ github.event.inputs.film_grain }}
-          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
-          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
-          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-        run: python uploader.py
