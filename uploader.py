@@ -253,7 +253,7 @@ async def main():
         audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
-    grain_params = f":film-grain={grain_val}" if grain_val > 0 else ""
+        grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
     async with Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
