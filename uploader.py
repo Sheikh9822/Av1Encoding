@@ -256,7 +256,8 @@ async def main():
     grain_params = f":film-grain={grain_val}" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+    async with Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+
         try:
             status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         except FloodWait as e:
