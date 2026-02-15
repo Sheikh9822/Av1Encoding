@@ -173,7 +173,6 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
     
-    # ENHANCEMENT: Dropped refresh limit to 4 seconds for smoother updates
     if now - last_up_update < 4:
         return
         
@@ -253,11 +252,12 @@ async def main():
         audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
-        grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
+    # ENHANCEMENT: Bypass the extremely slow denoising step while keeping the grain synthesis
+    grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
+    # ENHANCEMENT: :memory: session prevents Telegram AuthKey clashes when running batch jobs
     async with Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-
         try:
             status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         except FloodWait as e:
@@ -388,7 +388,6 @@ async def main():
             f"└ <b>Audio:</b> {u_audio.upper()} @ {u_bitrate}"
         )
 
-        # ENHANCEMENT: Pre-Upload UI Status
         await app.edit_message_text(chat_id, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
 
         await app.send_document(
