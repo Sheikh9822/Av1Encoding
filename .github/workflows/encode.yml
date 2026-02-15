@@ -4,28 +4,6 @@
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # Storing the Python script safely as an environment variable to avoid YAML indentation errors
-          TG_DL_SCRIPT: |
-            import asyncio, os
-            from pyrogram import Client
-            async def main():
-                api_id = int(os.environ["API_ID"])
-                api_hash = os.environ["API_HASH"]
-                bot_token = os.environ["BOT_TOKEN"]
-                chat_id = int(os.environ["CHAT_ID"])
-                msg_id = int(os.environ["MSG_ID"])
-                
-                app = Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
-                async with app:
-                    msg = await app.get_messages(chat_id, msg_id)
-                    fname = "telegram_video.mkv"
-                    if msg.video and getattr(msg.video, 'file_name', None):
-                        fname = msg.video.file_name
-                    elif msg.document and getattr(msg.document, 'file_name', None):
-                        fname = msg.document.file_name
-                    print(f"FILE_NAME_EXTRACTED={fname}")
-                    await msg.download(file_name="source.mkv")
-            asyncio.run(main())
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
@@ -34,8 +12,30 @@
             echo "📲 Telegram internal file detected. Engaging Pyrogram to download..."
             export MSG_ID="${URL#tg://}"
             
-            # Write the script from the environment variable and run it
-            echo "$TG_DL_SCRIPT" > tg_dl.py
+            # Write a temporary python script to intercept the file natively using Pyrogram
+            cat << 'EOF' > tg_dl.py
+import asyncio, os
+from pyrogram import Client
+async def main():
+    api_id = int(os.environ["API_ID"])
+    api_hash = os.environ["API_HASH"]
+    bot_token = os.environ["BOT_TOKEN"]
+    chat_id = int(os.environ["CHAT_ID"])
+    msg_id = int(os.environ["MSG_ID"])
+    
+    app = Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+    async with app:
+        msg = await app.get_messages(chat_id, msg_id)
+        fname = "telegram_video.mkv"
+        if msg.video and getattr(msg.video, 'file_name', None):
+            fname = msg.video.file_name
+        elif msg.document and getattr(msg.document, 'file_name', None):
+            fname = msg.document.file_name
+        print(f"FILE_NAME_EXTRACTED={fname}")
+        await msg.download(file_name="source.mkv")
+asyncio.run(main())
+EOF
+            
             OUT=$(python tg_dl.py)
             EXTRACTED=$(echo "$OUT" | sed -n 's/^FILE_NAME_EXTRACTED=//p')
             
