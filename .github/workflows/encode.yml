@@ -1,15 +1,20 @@
 name: Encode and Send
-run-name: "Encoding: ${{ github.event.inputs.custom_name || 'Auto-Detected File' }}"
+# Look for ui_title first, fallback to custom_name, then Auto-Detected
+run-name: "Encoding: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected File' }}"
 
 on:
   workflow_dispatch:
     inputs:
+      ui_title:
+        description: 'Dashboard Display Title'
+        required: false
       video_url:
         description: 'Direct Link, YouTube URL, or Magnet Link'
         required: true
       custom_name:
         description: 'Output Filename (Leave empty to auto-extract from URL)'
         required: false
+
       res_choice:
         description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
         required: false
