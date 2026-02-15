@@ -21,6 +21,10 @@ on:
         description: 'SVT-AV1 Preset (Default: 6)'
         default: '6'
         required: false
+      film_grain:
+        description: 'Synthetic Grain (0 to 50, 0 = Disabled)'
+        default: '0'
+        required: false
       audio_mode:
         description: 'Audio: opus or copy'
         default: 'opus'
@@ -29,8 +33,8 @@ on:
         description: 'Opus Bitrate (128k, 160k, 192k)'
         default: '128k'
         required: false
-      run_ssim:
-        description: 'Calculate SSIM Quality Score? (true/false)'
+      run_vmaf:
+        description: 'Calculate True VMAF Quality Score? (true/false)'
         default: 'true'
         required: false
 
@@ -46,11 +50,18 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
           
-      - name: 🛠 Install Dependencies
+      - name: 🛠 Install Dependencies & Static FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl mkvtoolnix aria2
+          sudo apt-get install -y curl mkvtoolnix aria2
           pip install -r requirements.txt yt-dlp
+          
+          # Download a specialized static FFmpeg build with libvmaf pre-compiled
+          echo "⬇️ Downloading Static FFmpeg with libvmaf..."
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
       - name: 💾 Restore Telegram Session
         uses: actions/cache@v4
@@ -70,36 +81,28 @@ jobs:
             mkdir -p dl_temp
             aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --dir=./dl_temp "$URL"
             
-            # Find the largest file downloaded from the torrent
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
             
             if [ -z "$CUSTOM" ]; then
-              # Extract the original torrent file name and force .mkv extension
               BASE_NAME=$(basename "$DL_FILE")
               FINAL_NAME="${BASE_NAME%.*}.mkv"
             else
               FINAL_NAME="${CUSTOM}.mkv"
             fi
-            
             mv "$DL_FILE" ./source.mkv
             
           else
             echo "🌐 Standard/Video URL detected. Engaging yt-dlp..."
-            
             if [ -z "$CUSTOM" ]; then
-              # Fetch the title automatically using yt-dlp (restricted to safe characters)
               FETCHED_TITLE=$(yt-dlp --print filename -o "%(title)s" --restrict-filenames "$URL" | head -n 1)
               FINAL_NAME="${FETCHED_TITLE}.mkv"
             else
               FINAL_NAME="${CUSTOM}.mkv"
             fi
-            
             yt-dlp --merge-output-format mkv -o "source.mkv" "$URL"
           fi
           
           echo "✅ Selected Filename: $FINAL_NAME"
-          
-          # Pass the final name globally so uploader.py can read it
           echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
 
       - name: 🚀 Execute Sci-Fi Encoder
@@ -108,11 +111,11 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # FILE_NAME is now automatically inherited from the previous step via $GITHUB_ENV
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
+          USER_GRAIN: ${{ github.event.inputs.film_grain }}
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
-          RUN_SSIM: ${{ github.event.inputs.run_ssim }}
+          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
         run: python uploader.py
