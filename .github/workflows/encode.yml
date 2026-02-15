@@ -68,10 +68,6 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
       - name: 📥 Universal Download Core & Name Extraction
-        env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
@@ -91,33 +87,6 @@ jobs:
               FINAL_NAME="${CUSTOM}.mkv"
             fi
             mv "$DL_FILE" ./source.mkv
-            
-          # NEW: Handle Telegram direct file passing via MTProto Pyrogram
-          elif [[ "$URL" == tg_file:* ]]; then
-            echo "📱 Telegram File detected. Engaging Pyrogram MTProto Downloader..."
-            FILE_ID=$(echo "$URL" | sed 's/tg_file://' | cut -d'|' -f1)
-            RAW_NAME=$(echo "$URL" | cut -d'|' -f2)
-            
-            if [ -z "$CUSTOM" ]; then
-              FINAL_NAME="${RAW_NAME%.*}.mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
-            
-            export FILE_ID
-            cat << 'EOF' > tg_dl.py
-import asyncio, os
-from pyrogram import Client
-
-async def main():
-    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])
-    async with app:
-        print(f"⬇️ Downloading file {os.environ['FILE_ID']} from Telegram (up to 2GB)...")
-        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")
-
-asyncio.run(main())
-EOF
-            python tg_dl.py
             
           else
             echo "🌐 Standard/Video URL detected. Engaging yt-dlp with MAX aria2c acceleration..."
