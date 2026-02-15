@@ -25,9 +25,7 @@ def get_video_info():
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
     audio_stream = next((s for s in res['streams'] if s['codec_type'] == 'audio'), {})
     
-    # ENHANCEMENT: Default to 0 channels to properly detect audio-less videos
     channels = int(audio_stream.get('channels', 0))
-    
     duration = float(res['format'].get('duration', 0))
     height = int(video_stream.get('height', 0))
     fps_raw = video_stream.get('r_frame_rate', '24/1')
@@ -53,7 +51,6 @@ async def async_generate_grid(duration):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-# ENHANCEMENT: Made get_ssim fully async to prevent blocking the event loop
 async def get_ssim(output_file):
     cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", "ssim", "-f", "null", "-"]
     try:
@@ -65,11 +62,33 @@ async def get_ssim(output_file):
         pass
     return "N/A"
 
+# ENHANCEMENT: Auto-Crop Detection to save bitrate on widescreen letterboxes
+def get_crop_params():
+    cmd = [
+        "ffmpeg", "-skip_frame", "nokey", "-ss", "00:01:00", "-i", SOURCE,
+        "-vframes", "100", "-vf", "cropdetect", "-f", "null", "-"
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        for line in reversed(res.stderr.split('\n')):
+            if "crop=" in line:
+                return line.split("crop=")[1].split(" ")[0]
+    except:
+        pass
+    return None
+
 def select_params(height):
     if height >= 2000: return 32, 10
     elif height >= 1000: return 42, 6
     elif height >= 700: return 24, 6
     return 22, 4
+
+# ENHANCEMENT: Failsafe Cloud Uploader
+async def upload_to_cloud(filepath):
+    cmd = ["curl", "-H", "Max-Days: 3", "--upload-file", filepath, f"https://transfer.sh/{os.path.basename(filepath)}"]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, _ = await proc.communicate()
+    return stdout.decode().strip()
 
 # ---------- UPLOAD CALLBACK ----------
 
@@ -79,7 +98,6 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
     
-    # Refresh every 8 seconds for a snappier UI
     if now - last_up_update < 8:
         return
         
@@ -134,9 +152,17 @@ async def main():
     res_label = u_res if u_res else f"{height}p"
     hdr_label = "HDR10" if is_hdr else "SDR"
     
-    scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
+    # --- AUTO CROP & SCALE LOGIC ---
+    crop_val = get_crop_params()
+    vf_filters = []
+    if crop_val:
+        vf_filters.append(f"crop={crop_val}")
+    if u_res:
+        vf_filters.append(f"scale=-2:{u_res}")
+        
+    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
+    # -------------------------------
     
-    # ENHANCEMENT: Check for 0 channels to prevent audio-less video crashes
     if channels == 0:
         audio_cmd = []
     elif u_audio == "opus":
@@ -156,10 +182,9 @@ async def main():
 
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
-        # Optimized AV1 Command for GH Actions Runners
         cmd = [
             "ffmpeg", "-i", SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
-            *scale_filter,
+            *video_filters,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), "-preset", str(final_preset),
             "-svtav1-params", f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}",
@@ -187,6 +212,9 @@ async def main():
                         if time.time() - last_update > 8:
                             bar = generate_progress_bar(percent)
                             size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
+                            
+                            crop_label = f" | Cropped" if crop_val else ""
+                            
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
@@ -198,7 +226,7 @@ async def main():
                                 f"│ 📊 PROG: {bar} {percent:.1f}% \n"
                                 f"│                                    \n"
                                 f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
-                                f"│ 🎞️ VIDEO: {res_label} | 10-bit | {hdr_label}\n"
+                                f"│ 🎞️ VIDEO: {res_label}{crop_label} | 10-bit | {hdr_label}\n"
                                 f"│ 🔊 AUDIO: {u_audio.upper()} @ {u_bitrate}\n"
                                 f"│ 📦 SIZE: {size:.2f} MB\n"
                                 f"│                                    \n"
@@ -221,7 +249,6 @@ async def main():
             await app.send_document(chat_id, LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # ENHANCEMENT: Swapped FFmpeg for mkvmerge to preserve attachments/fonts perfectly
         await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{file_name}"
         
@@ -239,24 +266,30 @@ async def main():
             os.rename(fixed_file, file_name)
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
+        ssim_val = await get_ssim(file_name) if run_ssim else "N/A"
         
-        # ENHANCEMENT: Lowered 2000 to 1990 for a safer buffer against Telegram limits
+        # --- ENHANCEMENT: OVERFLOW CLOUD UPLOAD ---
         if final_size > 1990:
-            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 1.95GB limit. Sending Log only.")
+            await app.edit_message_text(chat_id, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
+            cloud_url = await upload_to_cloud(file_name)
+            
+            overflow_report = (
+                f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL (OVERFLOW)</b>\n\n"
+                f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
+                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code> (Exceeds Telegram limit)\n\n"
+                f"☁️ <b>EXTERNAL UPLINK (Valid 3 days):</b>\n{cloud_url}\n\n"
+                f"<i>Sending process logs below.</i>"
+            )
+            await app.send_message(chat_id, overflow_report, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
             await app.send_document(chat_id, LOG_FILE)
             return
-
-        # ENHANCEMENT: Awaited the new async SSIM function
-        ssim_val = await get_ssim(file_name) if run_ssim else "N/A"
         
         # --- SEQUENTIAL OUTPUT START ---
         
-        # 1. Send Grid First
         if os.path.exists(SCREENSHOT):
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(SCREENSHOT)
 
-        # 2. Compile Report
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
@@ -269,7 +302,6 @@ async def main():
             f"└ <b>Audio:</b> {u_audio.upper()} @ {u_bitrate}"
         )
 
-        # 3. Send Document with Progress
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
