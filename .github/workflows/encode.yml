@@ -33,10 +33,6 @@ on:
         description: 'Calculate Quality Score? (true/false)'
         default: 'true'
         required: false
-      seek_time:
-        description: 'Resume Timestamp (HH:MM:SS) - Leave 00:00:00 for new mission'
-        default: '00:00:00'
-        required: false
 
 jobs:
   encode:
@@ -53,6 +49,7 @@ jobs:
       - name: 🛠 Install Dependencies
         run: |
           sudo apt-get update
+          # Added mkvtoolnix for better attachment/font handling
           sudo apt-get install -y ffmpeg curl mkvtoolnix
           pip install -r requirements.txt
 
@@ -65,6 +62,7 @@ jobs:
             tg-session-
 
       - name: 📥 Download Source
+        # Added --retry to handle transient network drops during download
         run: curl --globoff -L --retry 3 -o "source.mkv" "${{ github.event.inputs.video_url }}"
 
       - name: 🚀 Execute Sci-Fi Encoder
@@ -80,5 +78,4 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-          SEEK_TIME: ${{ github.event.inputs.seek_time }}
         run: python uploader.py
