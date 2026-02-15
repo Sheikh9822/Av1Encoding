@@ -14,7 +14,6 @@ on:
       custom_name:
         description: 'Output Filename (Leave empty to auto-extract from URL)'
         required: false
-
       res_choice:
         description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
         required: false
@@ -91,7 +90,8 @@ jobs:
           else
             echo "🌐 Standard/Video URL detected. Engaging yt-dlp..."
             if [ -z "$CUSTOM" ]; then
-              FETCHED_TITLE=$(yt-dlp --print filename -o "%(title)s" --restrict-filenames "$URL" | head -n 1)
+              # FIX: Removed --restrict-filenames so brackets and spaces are preserved
+              FETCHED_TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
               FINAL_NAME="${FETCHED_TITLE}.mkv"
             else
               FINAL_NAME="${CUSTOM}.mkv"
