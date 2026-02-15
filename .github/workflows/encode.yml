@@ -8,7 +8,7 @@ on:
         description: 'Direct Link to Video'
         required: true
       custom_name:
-        description: 'Output Filename'
+        description: 'Output Filename (no ext)'
         required: true
       res_choice:
         description: 'Resolution (e.g., 1080)'
@@ -30,7 +30,7 @@ on:
         default: '128k'
         required: false
       run_vmaf:
-        description: 'Quality Score? (true/false)'
+        description: 'Calculate Quality Score? (true/false)'
         default: 'true'
         required: false
 
@@ -48,7 +48,8 @@ jobs:
       - name: 🛠 Install Pro-Encoding Suite
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl libvmaf-dev
+          # Fixed dependency list for Ubuntu Noble
+          sudo apt-get install -y ffmpeg curl libvmaf1 libvmaf-bin
           pip install -r requirements.txt
 
       - name: 📥 Download Source
