@@ -93,7 +93,7 @@ jobs:
             mv "$DL_FILE" ./source.mkv
             
           elif [[ "$URL" == tg_file:* ]]; then
-            echo "📱 Telegram File detected. Engaging Pyrogram MTProto Downloader..."
+            echo "📱 Telegram Direct File detected. Engaging Pyrogram MTProto Downloader..."
             FILE_ID=$(echo "$URL" | sed 's/tg_file://' | cut -d'|' -f1)
             RAW_NAME=$(echo "$URL" | cut -d'|' -f2)
             
@@ -115,6 +115,46 @@ jobs:
             echo 'asyncio.run(main())' >> tg_dl.py
             
             python3 tg_dl.py
+            
+          # NEW: Handle standard t.me Post Links using Pyrogram instead of yt-dlp
+          elif [[ "$URL" == https://t.me/* ]]; then
+            echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
+            export TG_LINK="$URL"
+            
+            echo 'import asyncio, os' > tg_dl_link.py
+            echo 'from pyrogram import Client' >> tg_dl_link.py
+            echo 'async def main():' >> tg_dl_link.py
+            echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
+            echo '    link = os.environ["TG_LINK"].rstrip("/")' >> tg_dl_link.py
+            echo '    parts = link.split("/")' >> tg_dl_link.py
+            echo '    msg_id = int(parts[-1].split("?")[0])' >> tg_dl_link.py
+            echo '    chat_id = int(f"-100{parts[-2]}") if len(parts) > 2 and parts[-3] == "c" else parts[-2]' >> tg_dl_link.py
+            echo '    async with app:' >> tg_dl_link.py
+            echo '        print(f"⬇️ Fetching message {msg_id} from {chat_id}...")' >> tg_dl_link.py
+            echo '        msg = await app.get_messages(chat_id, msg_id)' >> tg_dl_link.py
+            echo '        if not msg or msg.empty or not msg.media:' >> tg_dl_link.py
+            echo '            print("❌ Error: No media found OR Bot is not an Admin/Member of this channel!")' >> tg_dl_link.py
+            echo '            exit(1)' >> tg_dl_link.py
+            echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
+            echo '        await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
+            echo '        fn = "Telegram_Video.mkv"' >> tg_dl_link.py
+            echo '        if getattr(msg, "video", None) and getattr(msg.video, "file_name", None): fn = msg.video.file_name' >> tg_dl_link.py
+            echo '        elif getattr(msg, "document", None) and getattr(msg.document, "file_name", None): fn = msg.document.file_name' >> tg_dl_link.py
+            echo '        with open("tg_fname.txt", "w") as f: f.write(fn)' >> tg_dl_link.py
+            echo 'asyncio.run(main())' >> tg_dl_link.py
+            
+            python3 tg_dl_link.py
+            
+            if [ -z "$CUSTOM" ]; then
+              if [ -f "tg_fname.txt" ]; then
+                RAW_NAME=$(cat tg_fname.txt)
+                FINAL_NAME="${RAW_NAME%.*}.mkv"
+              else
+                FINAL_NAME="Telegram_Video.mkv"
+              fi
+            else
+              FINAL_NAME="${CUSTOM}.mkv"
+            fi
             
           else
             echo "🌐 Standard/Video URL detected. Engaging yt-dlp with MAX aria2c acceleration..."
