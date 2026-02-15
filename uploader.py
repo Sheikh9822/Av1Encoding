@@ -1,6 +1,3 @@
-Here is your fully patched, hyper-optimized uploader.py.
-This version contains every single enhancement we've built, including the memory session for parallel batch encoding, the native Telegram upload fix (removed uvloop), and the brand-new Film Grain Denoise Bypass so you get the visual benefits of AV1 grain without the 2.5-hour CPU penalty.
-You can overwrite your current uploader.py with this exact code:
 import asyncio
 import os
 import subprocess
@@ -412,4 +409,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
