@@ -8,7 +8,7 @@ from datetime import timedelta
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
 
-# High-performance event loop for Linux
+# High-performance event loop for Linux runners
 uvloop.install()
 
 SOURCE = "source.mkv"
@@ -24,7 +24,6 @@ def get_video_info():
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", SOURCE]
     res = json.loads(subprocess.check_output(cmd).decode())
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
-    
     audio_stream = next((s for s in res['streams'] if s['codec_type'] == 'audio'), {})
     channels = int(audio_stream.get('channels', 2))
     
@@ -47,8 +46,8 @@ def format_time(seconds):
 async def async_generate_grid(duration):
     loop = asyncio.get_event_loop()
     def sync_grid():
-        # Enhanced: 'thumbnail' filter picks the best visual frames
-        select_filter = f"select='thumbnail',scale=480:-1,tile=3x3"
+        # Using thumbnail filter for scene-aware grid
+        select_filter = f"thumbnail,scale=480:-1,tile=3x3"
         cmd = ["ffmpeg", "-i", SOURCE, "-vf", select_filter, "-frames:v", "1", "-q:v", "3", SCREENSHOT, "-y"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
@@ -74,7 +73,7 @@ last_up_update = 0
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
-    if now - last_up_update < 8: return # 8s refresh
+    if now - last_up_update < 8: return # Snappy 8s update
         
     percent = (current / total) * 100
     bar = generate_progress_bar(percent)
@@ -93,13 +92,13 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     try:
         await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
         last_up_update = now
-    except FloodWait as e: await asyncio.sleep(e.value) #
+    except FloodWait as e: await asyncio.sleep(e.value) # Handle API limits
     except: pass
 
 # ---------- MAIN PROCESS ----------
 
 async def main():
-    global CANCELLED, PROCESS, START_T
+    global PROCESS, START_T
 
     api_id, api_hash = int(os.getenv("API_ID")), os.getenv("API_HASH")
     bot_token, chat_id = os.getenv("BOT_TOKEN"), int(os.getenv("CHAT_ID"))
@@ -117,7 +116,6 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
-    # RESTORED: Auto-param selection logic
     def_crf, def_preset = select_params(height)
     final_crf = u_crf_raw if (u_crf_raw and u_crf_raw.strip()) else def_crf
     final_preset = u_preset_raw if (u_preset_raw and u_preset_raw.strip()) else def_preset
@@ -126,7 +124,6 @@ async def main():
     hdr_label = "HDR10" if is_hdr else "SDR"
     scale_filter = ["-vf", f"scale=-2:{u_res}"] if u_res else []
     
-    # RESTORED: Audio Bitrate Scaling for Surround
     if u_audio == "opus":
         calc_bitrate = u_bitrate if channels <= 2 else "256k"
         audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
@@ -136,12 +133,9 @@ async def main():
     hdr_params = ":enable-hdr=1" if is_hdr else ""
 
     async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
-        try:
-            status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 2)
-            status = await app.send_message(chat_id, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
-
+        status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
+        
+        # Grid generation starts here
         grid_task = asyncio.create_task(async_generate_grid(duration))
 
         cmd = [
@@ -152,7 +146,7 @@ async def main():
             "-svtav1-params", f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}",
             "-threads", "0",
             *audio_cmd, "-c:s", "copy",
-            "-metadata", "title=AV1 Satellite Encode",
+            "-metadata", "title=AV1 Satellite Controller",
             "-metadata:s:v:0", f"title=SVT-AV1 ({res_label})",
             "-metadata:s:a:0", f"title=Opus ({u_bitrate})",
             "-progress", "pipe:1", "-nostats", "-y", file_name
@@ -165,10 +159,7 @@ async def main():
             PROCESS = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             for line in PROCESS.stdout:
                 f_log.write(line)
-                if CANCELLED: break
-                
-                # Checkpoint Check: 5.5 hours limit
-                if time.time() - START_T > 19800:
+                if time.time() - START_T > 19800: # 5.5h Checkpoint
                     stasis_mode = True
                     PROCESS.terminate()
                     break
@@ -183,7 +174,6 @@ async def main():
                         
                         if time.time() - last_update > 8:
                             bar = generate_progress_bar(percent)
-                            size = os.path.getsize(file_name)/(1024**2) if os.path.exists(file_name) else 0
                             scifi_ui = (
                                 f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
                                 f"│                                    \n"
@@ -196,18 +186,16 @@ async def main():
                                 f"│                                    \n"
                                 f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
                                 f"│ 🎞️ VIDEO: {res_label} | 10-bit | {hdr_label}\n"
-                                f"│ 📦 SIZE: {size:.2f} MB\n"
                                 f"│                                    \n"
                                 f"└────────────────────────────────────┘</code>"
                             )
-                            try:
-                                await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
-                                last_update = time.time()
-                            except FloodWait as e: await asyncio.sleep(e.value)
-                            except: continue
+                            await app.edit_message_text(chat_id, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
+                            last_update = time.time()
                     except: continue
 
         PROCESS.wait()
+        
+        # CRITICAL: Await the grid generation before moving to upload
         await grid_task
 
         if stasis_mode:
@@ -219,7 +207,7 @@ async def main():
             await app.send_document(chat_id, file_name, caption=stasis_msg)
             return
 
-        # Finalizing & Attachment Preservation
+        # Optimization & Attachment mapping
         await app.edit_message_text(chat_id, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{file_name}"
         remux_cmd = ["ffmpeg", "-i", file_name, "-i", SOURCE, "-map", "0", "-map", "1:t?", "-c", "copy", "-map_metadata", "0", fixed_file, "-y"]
@@ -229,17 +217,13 @@ async def main():
             os.rename(fixed_file, file_name)
 
         final_size = os.path.getsize(file_name)/(1024**2)
-        if final_size > 2000:
-            await app.send_message(chat_id, "⚠️ <b>SIZE OVERFLOW:</b> File exceeds 2GB. Transmitting Log only.")
-            await app.send_document(chat_id, LOG_FILE)
-            return
-
-        # Sequential Sequential Output
+        ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
+        
+        # SEQUENTIAL TRANSMISSION
         if os.path.exists(SCREENSHOT):
             await app.send_photo(chat_id, SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{file_name}</code>")
             os.remove(SCREENSHOT)
 
-        ssim_val = get_ssim(file_name) if run_vmaf else "N/A"
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{file_name}</code>\n"
