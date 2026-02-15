@@ -1,15 +1,14 @@
+Here is your fully patched, hyper-optimized uploader.py.
+This version contains every single enhancement we've built, including the memory session for parallel batch encoding, the native Telegram upload fix (removed uvloop), and the brand-new Film Grain Denoise Bypass so you get the visual benefits of AV1 grain without the 2.5-hour CPU penalty.
+You can overwrite your current uploader.py with this exact code:
 import asyncio
 import os
 import subprocess
 import time
 import json
-import uvloop
 from datetime import timedelta
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
-
-# High-performance event loop for Linux runners
-uvloop.install()
 
 SOURCE = "source.mkv"
 SCREENSHOT = "grid_preview.jpg"
@@ -32,7 +31,8 @@ def get_video_info():
     fps_val = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
     total_frames = int(video_stream.get('nb_frames', duration * fps_val))
     is_hdr = 'bt2020' in video_stream.get('color_primaries', 'bt709')
-    return duration, height, is_hdr, total_frames, channels
+    
+    return duration, height, is_hdr, total_frames, channels, fps_val
 
 def generate_progress_bar(percentage):
     total_segments = 15
@@ -51,13 +51,11 @@ async def async_generate_grid(duration):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-# ENHANCEMENT: Fast VMAF Sampling (30 seconds spread across 6 parts)
-async def get_vmaf(output_file, vf_string="", duration=0):
+async def get_vmaf(output_file, vf_string="", duration=0, fps=24, app=None, chat_id=None, status_msg=None):
     if duration > 30:
         interval = duration / 6
         select_parts = []
         for i in range(6):
-            # Grab exactly 5 seconds from the middle of each of the 6 intervals
             start_t = (i * interval) + (interval / 2) - 2.5
             end_t = start_t + 5
             select_parts.append(f"between(t,{start_t},{end_t})")
@@ -65,27 +63,84 @@ async def get_vmaf(output_file, vf_string="", duration=0):
         select_expr = "+".join(select_parts)
         select_filter = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
         
-        # Apply the crop/scale AND the 6-part time slice to both videos
         if vf_string:
             filter_graph = f"[1:v]{vf_string},{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
         else:
             filter_graph = f"[1:v]{select_filter}[ref];[0:v]{select_filter}[dist];[dist][ref]libvmaf"
+            
+        total_vmaf_frames = int(30 * fps)
     else:
-        # Fallback for very short videos (under 30 seconds)
         if vf_string:
             filter_graph = f"[1:v]{vf_string}[ref];[0:v][ref]libvmaf"
         else:
             filter_graph = "libvmaf"
-            
-    cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", filter_graph, "-f", "null", "-"]
+        total_vmaf_frames = int(duration * fps)
+        
+    cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", SOURCE, "-filter_complex", filter_graph, "-progress", "pipe:1", "-nostats", "-f", "null", "-"]
+    
+    vmaf_score = "N/A"
+    
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        _, stderr = await proc.communicate()
-        for line in stderr.decode().split('\n'):
-            if "VMAF score:" in line: return line.split("VMAF score:")[1].strip()
-    except: 
-        pass
-    return "N/A"
+        start_time = time.time()
+        last_update = 0
+        
+        async def read_progress():
+            nonlocal last_update
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                line_str = line.decode().strip()
+                if line_str.startswith("frame="):
+                    try:
+                        curr_frame = int(line_str.split("=")[1].strip())
+                        percent = min(100, (curr_frame / total_vmaf_frames) * 100)
+                        now = time.time()
+                        
+                        if now - last_update > 5 and app and status_msg:
+                            elapsed = now - start_time
+                            speed = curr_frame / elapsed if elapsed > 0 else 0
+                            eta = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
+                            
+                            bar = generate_progress_bar(percent)
+                            ui = (
+                                f"<code>┌─── 🧠 [ SYSTEM.ANALYSIS.VMAF ] ───┐\n"
+                                f"│                                    \n"
+                                f"│ 🔬 SCORING: Rapid 30s Sample\n"
+                                f"│ 📊 PROG: {bar} {percent:.1f}%\n"
+                                f"│ ⚡ SPEED: {speed:.1f} FPS\n"
+                                f"│ ⏳ ETA: {format_time(eta)}\n"
+                                f"│                                    \n"
+                                f"└────────────────────────────────────┘</code>"
+                            )
+                            try:
+                                await app.edit_message_text(chat_id, status_msg.id, ui, parse_mode=enums.ParseMode.HTML)
+                                last_update = now
+                            except FloodWait as e:
+                                await asyncio.sleep(e.value)
+                            except:
+                                pass
+                    except:
+                        pass
+
+        async def read_stderr():
+            nonlocal vmaf_score
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                line_str = line.decode('utf-8', errors='ignore').strip()
+                if "VMAF score:" in line_str:
+                    vmaf_score = line_str.split("VMAF score:")[1].strip()
+
+        await asyncio.gather(read_progress(), read_stderr())
+        await proc.wait()
+        return vmaf_score
+        
+    except Exception as e:
+        print(f"VMAF Capture Error: {e}")
+        return "N/A"
 
 def get_crop_params():
     cmd = [
@@ -121,7 +176,7 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
     now = time.time()
     
-    if now - last_up_update < 8:
+    if now - last_up_update < 4:
         return
         
     percent = (current / total) * 100
@@ -164,7 +219,7 @@ async def main():
     run_vmaf = os.getenv("RUN_VMAF", "true").lower() == "true"
 
     try:
-        duration, height, is_hdr, total_frames, channels = get_video_info()
+        duration, height, is_hdr, total_frames, channels, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
         return
@@ -200,10 +255,12 @@ async def main():
         audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
-    grain_params = f":film-grain={grain_val}" if grain_val > 0 else ""
+    # ENHANCEMENT: Bypass the extremely slow denoising step while keeping the grain synthesis
+    grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    async with Client("uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
+    # ENHANCEMENT: :memory: session prevents Telegram AuthKey clashes when running batch jobs
+    async with Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
         try:
             status = await app.send_message(chat_id, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         except FloodWait as e:
@@ -288,8 +345,7 @@ async def main():
             "--no-video", "--no-audio", "--no-subtitles", SOURCE
         ]
         
-        remux_proc = await asyncio.create_subprocess_exec(*remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        await remux_proc.communicate()
+        subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if os.path.exists(fixed_file):
             os.remove(file_name)
@@ -297,11 +353,9 @@ async def main():
 
         final_size = os.path.getsize(file_name)/(1024*1024) if os.path.exists(file_name) else 0
         
-        # --- NEW UI UPDATE FOR VMAF ---
         vf_string = ",".join(vf_filters) if vf_filters else ""
         if run_vmaf:
-            await app.edit_message_text(chat_id, status.id, "🧠 <b>[ SYSTEM.ANALYSIS ] Calculating VMAF Score (Rapid 30s Sample)...</b>", parse_mode=enums.ParseMode.HTML)
-            vmaf_val = await get_vmaf(file_name, vf_string, duration)
+            vmaf_val = await get_vmaf(file_name, vf_string, duration, fps_val, app, chat_id, status)
         else:
             vmaf_val = "N/A"
         
@@ -337,6 +391,8 @@ async def main():
             f"└ <b>Audio:</b> {u_audio.upper()} @ {u_bitrate}"
         )
 
+        await app.edit_message_text(chat_id, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
+
         await app.send_document(
             chat_id=chat_id, 
             document=file_name, 
@@ -356,3 +412,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
