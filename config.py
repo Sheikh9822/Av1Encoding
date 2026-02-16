@@ -12,6 +12,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = int(os.getenv("CHAT_ID", "0")) if os.getenv("CHAT_ID") else 0
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 
+# This is the key fix for FloodWait:
+# We use a session file named 'enc_session' instead of ":memory:"
+SESSION_NAME = os.getenv("SESSION_NAME", "enc_session")
+
 # ---------- USER SETTINGS ----------
 USER_RES = os.getenv("USER_RES")
 USER_CRF = os.getenv("USER_CRF")
