@@ -63,6 +63,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
+          mkdir -p tg_session_dir
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
