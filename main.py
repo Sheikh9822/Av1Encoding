@@ -27,7 +27,7 @@ async def main():
     hdr_label = "HDR10" if is_hdr else "SDR"
     grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
     
-    crop_val = get_crop_params()
+    crop_val = get_crop_params(duration)
     vf_filters = []
     if crop_val: vf_filters.append(f"crop={crop_val}")
     if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
