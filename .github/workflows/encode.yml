@@ -1,52 +1,58 @@
 name: AV1 Dual-Lane Pipeline
-# Unique run name for clarity
-run-name: "🎬 [ENCODE]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
+run-name: "🚀 [STAGE-1]: ${{ inputs.ui_title || inputs.custom_name || 'Targeting Mission' }}"
 
 on:
   workflow_dispatch:
     inputs:
       ui_title:
         description: 'Dashboard Title'
+        required: false
       video_url:
-        description: 'Telegram Link'
+        description: 'Telegram Post Link'
         required: true
       custom_name:
-        description: 'Output Filename'
+        description: 'Output Filename (Optional)'
+        required: false
       res_choice:
-        description: 'Resolution'
+        description: 'Resolution (e.g. 1080, 720)'
+        required: false
       custom_crf:
-        description: 'CRF'
+        description: 'CRF (Default 42)'
         default: '42'
       custom_preset:
-        description: 'Preset'
+        description: 'Preset (Default 6)'
         default: '6'
       film_grain:
-        description: 'Grain'
+        description: 'Grain (0-50)'
         default: '0'
       audio_mode:
-        description: 'Audio Mode'
+        description: 'Audio: opus or copy'
         default: 'opus'
       audio_bitrate:
-        description: 'Audio Bitrate'
+        description: 'Audio Bitrate (e.g. 128k)'
         default: '128k'
       run_vmaf:
-        description: 'Run VMAF Quality Check?'
+        description: 'Run VMAF Quality Check? (true/false)'
         default: 'true'
 
 jobs:
-  # STAGE 1: THE DOWNLOADER (Limited to 2 concurrent runs)
+  # -------------------------------------------------------------------------
+  # STAGE 1: THE DOWNLOADER (Restricted to 2 global lanes)
+  # -------------------------------------------------------------------------
   download_phase:
     runs-on: ubuntu-latest
     concurrency:
-      # This logic (run_number % 2) creates 2 independent queues (Lane 0 and Lane 1)
-      # allowing exactly 2 downloads to happen at the same time globally.
+      # Modulo logic ensures exactly 2 downloads can run at once
       group: telegram-lane-${{ github.run_number % 2 }}
       cancel-in-progress: false
     outputs:
       final_name: ${{ steps.get_name.outputs.NAME }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 🛰️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -54,7 +60,7 @@ jobs:
       - name: 🛠 Install Download Tools
         run: pip install pyrogram tgcrypto
 
-      - name: 📁 Setup Session
+      - name: 📁 Setup Session Directory
         run: mkdir -p tg_session_dir
 
       - name: 💾 Restore Session Cache
@@ -68,6 +74,7 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: python3 tg_handler.py
 
@@ -80,30 +87,37 @@ jobs:
       - name: 📦 Upload Payload to Internal Storage
         uses: actions/upload-artifact@v4
         with:
-          # Unique name per run using run_id
+          # Unique identifier for this specific mission
           name: payload-${{ github.run_id }}
           path: |
             source.mkv
             tg_fname.txt
           retention-days: 1
-          compression-level: 0 # Speed up upload (no need to zip video)
+          # Disable compression for speed (video is already compressed)
+          compression-level: 0
 
-  # STAGE 2: THE ENCODER (Parallel - Runs as soon as download completes)
+  # -------------------------------------------------------------------------
+  # STAGE 2: THE ENCODER (Parallelized - No limits)
+  # -------------------------------------------------------------------------
   encode_phase:
     needs: download_phase
     runs-on: ubuntu-latest
     timeout-minutes: 480
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 🛰️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: 🛠 Install Encoding Tools
+      - name: 🛠 Install Encoding Tools & FFmpeg
         run: |
           sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
           pip install -r requirements.txt
+          # Download specialized FFmpeg for VMAF
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
@@ -113,7 +127,7 @@ jobs:
         with:
           name: payload-${{ github.run_id }}
 
-      - name: 🚀 Start AV1 Encoder
+      - name: 🚀 Execute Sci-Fi Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -126,5 +140,6 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          # Pass the detected name to the script
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
