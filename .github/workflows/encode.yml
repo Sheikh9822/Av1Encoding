@@ -33,11 +33,9 @@ on:
         default: 'true'
 
 jobs:
-  # -------------------------------------------------------------------------
-  # STAGE 1: DOWNLOADER (Limit: 2 Parallel Runs)
-  # -------------------------------------------------------------------------
   download_phase:
     runs-on: ubuntu-latest
+    # Creates two lanes: telegram-lane-0 and telegram-lane-1
     concurrency:
       group: telegram-lane-${{ github.run_number % 2 }}
       cancel-in-progress: false
@@ -45,13 +43,12 @@ jobs:
       final_name: ${{ steps.get_name.outputs.NAME }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
-      - name: 🛠 Install Download Tools
+      - name: 🛠 Install Tools
         run: pip install pyrogram tgcrypto
 
       - name: 📁 Setup Session
@@ -63,7 +60,7 @@ jobs:
           path: tg_session_dir
           key: tg-session-master
 
-      - name: 📥 Download from Telegram
+      - name: 📥 Download
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -75,14 +72,10 @@ jobs:
       - name: 🏷 Extract Filename
         id: get_name
         run: |
-          if [ -f "tg_fname.txt" ]; then
-            FN=$(cat tg_fname.txt)
-          else
-            FN="video.mkv"
-          fi
+          FN=$(cat tg_fname.txt)
           echo "NAME=$FN" >> $GITHUB_OUTPUT
 
-      - name: 📦 Upload to Artifacts
+      - name: 📦 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: payload-${{ github.run_id }}
@@ -92,22 +85,18 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  # -------------------------------------------------------------------------
-  # STAGE 2: ENCODER (Parallel - No Limits)
-  # -------------------------------------------------------------------------
   encode_phase:
     needs: download_phase
     runs-on: ubuntu-latest
     timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
-      - name: 🛠 Install Encoding Tools
+      - name: 🛠 Install Tools
         run: |
           sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
           pip install -r requirements.txt
@@ -115,14 +104,12 @@ jobs:
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📥 Download Payload
+      - name: 📥 Fetch Artifact
         uses: actions/download-artifact@v4
         with:
           name: payload-${{ github.run_id }}
-          # CRITICAL: Path '.' ensures source.mkv is in the root folder, not a subfolder
-          path: .
 
-      - name: 🚀 Start Encoder
+      - name: 🚀 Encode
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -135,6 +122,5 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-          # Pulls the name generated in the Download Phase
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
