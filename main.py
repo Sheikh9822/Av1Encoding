@@ -8,7 +8,8 @@ from pyrogram.errors import FloodWait
 
 import config
 import ui
-import media
+import media_tools as media
+
 
 # Proper Python logging avoids printing directly to stdout incorrectly
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
