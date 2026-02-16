@@ -50,11 +50,14 @@ jobs:
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📁 Setup Session Cache
+      - name: 📁 Setup Session Directory & Cache
+        run: mkdir -p tg_session_dir
+
+      - name: 💾 Cache Telegram Session
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session
+          key: tg-session-v2
 
       - name: 📥 Download Video
         env:
@@ -63,12 +66,10 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
-          mkdir -p tg_session_dir
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
           if [[ "$URL" == magnet:* ]]; then
-            echo "🧲 Magnet detected..."
             mkdir -p dl_temp
             aria2c --seed-time=0 --max-connection-per-server=16 --dir=./dl_temp "$URL"
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
@@ -84,7 +85,6 @@ jobs:
             fi
             
           else
-            echo "🌐 URL detected..."
             [ -z "$CUSTOM" ] && FINAL_NAME="$(yt-dlp --get-title "$URL").mkv" || FINAL_NAME="${CUSTOM}.mkv"
             yt-dlp --downloader aria2c --merge-output-format mkv -o "source.mkv" "$URL"
           fi
@@ -92,7 +92,7 @@ jobs:
           FINAL_NAME="${FINAL_NAME%.*}.mkv"
           echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
 
-      - name: 🚀 Start Encoding
+      - name: 🚀 Execute Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
