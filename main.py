@@ -27,7 +27,9 @@ async def main():
     hdr_label = "HDR10" if is_hdr else "SDR"
     grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
     
-    crop_val = get_crop_params()
+    # PASS DURATION TO CROP LOGIC
+    crop_val = get_crop_params(duration)
+    
     vf_filters = []
     if crop_val: vf_filters.append(f"crop={crop_val}")
     if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
@@ -44,10 +46,8 @@ async def main():
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    # Ensure the cache directory exists before Pyrogram tries to write to it
     os.makedirs("tg_session_dir", exist_ok=True)
 
-    # Replaced ":memory:" with a persistent file path inside the cached folder
     async with Client("tg_session_dir/bot_session", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
         try:
             status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
@@ -55,14 +55,20 @@ async def main():
             await asyncio.sleep(e.value + 2)
             status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
 
+        # UPDATED FFMPEG COMMAND
+        # 1. Added map 0:t? for Attachments (Fonts for Anime)
+        # 2. Added map_metadata 0 (Title, Year, etc)
+        # 3. Added -c:t copy to preserve the attachment data
         cmd = [
-            "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
+            "ffmpeg", "-i", config.SOURCE, 
+            "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?",
+            "-map_metadata", "0",
             *video_filters,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd, "-c:s", "copy",
+            *audio_cmd, "-c:s", "copy", "-c:t", "copy",
             "-progress", "pipe:1", "-nostats", "-y", config.FILE_NAME
         ]
 
@@ -110,12 +116,15 @@ async def main():
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
         
+        # Remux command also updated to ensure fonts carry over if mkvmerge is used (though ffmpeg likely handled it)
         remux_cmd = [
             "mkvmerge", "-o", fixed_file, 
             config.FILE_NAME, 
-            "--no-video", "--no-audio", "--no-subtitles", config.SOURCE
+            "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
         ]
         
+        # Note: If ffmpeg did the job correctly with -map 0:t?, this remux step is mostly for tags ffmpeg missed.
+        # We suppressed attachments in mkvmerge source to avoid duplication if ffmpeg already copied them.
         subprocess.run(remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if os.path.exists(fixed_file):
