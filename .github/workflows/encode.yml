@@ -67,10 +67,10 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
-      - name: 📁 Create Session Directory
+      - name: 📁 Create Session Directory (For Upload Bot)
         run: mkdir -p tg_session_dir
 
-      - name: 💾 Cache Telegram MTProto Session
+      - name: 💾 Cache Telegram Upload Session
         uses: actions/cache@v4
         with:
           path: tg_session_dir
@@ -81,6 +81,7 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_SESSION: ${{ secrets.TG_USER_SESSION }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
@@ -101,7 +102,7 @@ jobs:
             mv "$DL_FILE" ./source.mkv
             
           elif [[ "$URL" == tg_file:* ]]; then
-            echo "📱 Telegram Direct File detected. Engaging Pyrogram MTProto Downloader..."
+            echo "📱 Telegram Direct File detected. Engaging Stateless Pyrogram Session..."
             FILE_ID=$(echo "$URL" | sed 's/tg_file://' | cut -d'|' -f1)
             RAW_NAME=$(echo "$URL" | cut -d'|' -f2)
             
@@ -113,14 +114,16 @@ jobs:
             
             export FILE_ID
             
-            echo 'import asyncio, os, random' > tg_dl.py
+            echo 'import asyncio, os' > tg_dl.py
             echo 'from pyrogram import Client' >> tg_dl.py
             echo 'async def main():' >> tg_dl.py
-            echo '    delay = random.uniform(1, 15)' >> tg_dl.py
-            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl.py
-            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl.py
-            echo '        await asyncio.sleep(delay)' >> tg_dl.py
-            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
+            echo '    session = os.environ.get("TG_USER_SESSION")' >> tg_dl.py
+            echo '    if session:' >> tg_dl.py
+            echo '        app = Client("memory", session_string=session, api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], in_memory=True)' >> tg_dl.py
+            echo '        print("🔐 Authenticating via User Session String...")' >> tg_dl.py
+            echo '    else:' >> tg_dl.py
+            echo '        app = Client("memory", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"], in_memory=True)' >> tg_dl.py
+            echo '        print("🤖 Authenticating via Bot Token...")' >> tg_dl.py
             echo '    async with app:' >> tg_dl.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
             echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
@@ -129,17 +132,19 @@ jobs:
             python3 tg_dl.py
             
           elif [[ "$URL" == https://t.me/* ]]; then
-            echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
+            echo "📱 Telegram Post Link detected. Engaging Stateless Pyrogram Session..."
             export TG_LINK="$URL"
             
-            echo 'import asyncio, os, random' > tg_dl_link.py
+            echo 'import asyncio, os' > tg_dl_link.py
             echo 'from pyrogram import Client' >> tg_dl_link.py
             echo 'async def main():' >> tg_dl_link.py
-            echo '    delay = random.uniform(1, 15)' >> tg_dl_link.py
-            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl_link.py
-            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl_link.py
-            echo '        await asyncio.sleep(delay)' >> tg_dl_link.py
-            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
+            echo '    session = os.environ.get("TG_USER_SESSION")' >> tg_dl_link.py
+            echo '    if session:' >> tg_dl_link.py
+            echo '        app = Client("memory", session_string=session, api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], in_memory=True)' >> tg_dl_link.py
+            echo '        print("🔐 Authenticating via User Session String...")' >> tg_dl_link.py
+            echo '    else:' >> tg_dl_link.py
+            echo '        app = Client("memory", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"], in_memory=True)' >> tg_dl_link.py
+            echo '        print("🤖 Authenticating via Bot Token...")' >> tg_dl_link.py
             echo '    link = os.environ["TG_LINK"].rstrip("/")' >> tg_dl_link.py
             echo '    parts = link.split("/")' >> tg_dl_link.py
             echo '    msg_id = int(parts[-1].split("?")[0])' >> tg_dl_link.py
@@ -148,7 +153,7 @@ jobs:
             echo '        print(f"⬇️ Fetching message {msg_id} from {chat_id}...")' >> tg_dl_link.py
             echo '        msg = await app.get_messages(chat_id, msg_id)' >> tg_dl_link.py
             echo '        if not msg or msg.empty or not msg.media:' >> tg_dl_link.py
-            echo '            print("❌ Error: No media found OR Bot is not an Admin/Member of this channel!")' >> tg_dl_link.py
+            echo '            print("❌ Error: No media found OR Account lacks access to channel!")' >> tg_dl_link.py
             echo '            exit(1)' >> tg_dl_link.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
             echo '        await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
@@ -204,4 +209,3 @@ jobs:
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
         run: python main.py
-
