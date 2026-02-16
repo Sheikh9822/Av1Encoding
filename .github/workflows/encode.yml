@@ -1,52 +1,40 @@
-name: Encode and Send
-# Look for ui_title first, fallback to custom_name, then Auto-Detected
-run-name: "Encoding: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected File' }}"
+name: AV1 Encode & Send
+run-name: "Encoding: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected' }}"
 
 on:
   workflow_dispatch:
     inputs:
       ui_title:
         description: 'Dashboard Display Title'
-        required: false
       video_url:
-        description: 'Direct Link, YouTube URL, or Magnet Link'
+        description: 'Magnet, YouTube, or Telegram Link'
         required: true
       custom_name:
-        description: 'Output Filename (Leave empty to auto-extract from URL)'
-        required: false
+        description: 'Output Filename (Optional)'
       res_choice:
-        description: 'Resolution (e.g., 1080, 720) - Leave empty for Original'
-        required: false
+        description: 'Resolution (e.g. 1080, 720)'
       custom_crf:
-        description: 'CRF (Default: 42)'
+        description: 'CRF (Default 42)'
         default: '42'
-        required: false
       custom_preset:
-        description: 'SVT-AV1 Preset (Default: 6)'
+        description: 'Preset (Default 6)'
         default: '6'
-        required: false
       film_grain:
-        description: 'Synthetic Grain (0 to 50, 0 = Disabled)'
+        description: 'Grain (0-50)'
         default: '0'
-        required: false
       audio_mode:
         description: 'Audio: opus or copy'
         default: 'opus'
-        required: false
       audio_bitrate:
-        description: 'Opus Bitrate (128k, 160k, 192k)'
+        description: 'Audio Bitrate (e.g. 128k)'
         default: '128k'
-        required: false
       run_vmaf:
-        description: 'Calculate True VMAF Quality Score? (true/false)'
+        description: 'Run VMAF Analysis? (true/false)'
         default: 'true'
-        required: false
 
 jobs:
   encode:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,143 +42,56 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
           
-      - name: 🛠 Install Dependencies & Static FFmpeg
+      - name: 🛠 Install FFmpeg & Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl mkvtoolnix aria2
-          pip install -r requirements.txt yt-dlp
-          
-          # Download a specialized static FFmpeg build with libvmaf pre-compiled
-          echo "⬇️ Downloading Static FFmpeg with libvmaf..."
+          sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix
+          pip install -r requirements.txt
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
-          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
-          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📁 Create Session Directory
-        run: mkdir -p tg_session_dir
-
-      - name: 💾 Cache Telegram MTProto Session
+      - name: 📁 Setup Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: telegram-session-v1
+          key: tg-session
 
-      - name: 📥 Universal Download Core & Name Extraction
+      - name: 📥 Download Video
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
           if [[ "$URL" == magnet:* ]]; then
-            echo "🧲 Magnet link detected. Engaging aria2c at MAX speed..."
+            echo "🧲 Magnet detected..."
             mkdir -p dl_temp
-            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --min-split-size=1M --dir=./dl_temp "$URL"
-            
+            aria2c --seed-time=0 --max-connection-per-server=16 --dir=./dl_temp "$URL"
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
-            
-            if [ -z "$CUSTOM" ]; then
-              BASE_NAME=$(basename "$DL_FILE")
-              FINAL_NAME="${BASE_NAME%.*}.mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
+            [ -z "$CUSTOM" ] && FINAL_NAME="$(basename "$DL_FILE")" || FINAL_NAME="${CUSTOM}.mkv"
             mv "$DL_FILE" ./source.mkv
             
-          elif [[ "$URL" == tg_file:* ]]; then
-            echo "📱 Telegram Direct File detected. Engaging Pyrogram MTProto Downloader..."
-            FILE_ID=$(echo "$URL" | sed 's/tg_file://' | cut -d'|' -f1)
-            RAW_NAME=$(echo "$URL" | cut -d'|' -f2)
-            
+          elif [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
+            python3 tg_handler.py
             if [ -z "$CUSTOM" ]; then
-              FINAL_NAME="${RAW_NAME%.*}.mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
-            
-            export FILE_ID
-            
-            echo 'import asyncio, os, random' > tg_dl.py
-            echo 'from pyrogram import Client' >> tg_dl.py
-            echo 'async def main():' >> tg_dl.py
-            echo '    delay = random.uniform(1, 15)' >> tg_dl.py
-            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl.py
-            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl.py
-            echo '        await asyncio.sleep(delay)' >> tg_dl.py
-            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
-            echo '    async with app:' >> tg_dl.py
-            echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
-            echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
-            echo 'asyncio.run(main())' >> tg_dl.py
-            
-            python3 tg_dl.py
-            
-          elif [[ "$URL" == https://t.me/* ]]; then
-            echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
-            export TG_LINK="$URL"
-            
-            echo 'import asyncio, os, random' > tg_dl_link.py
-            echo 'from pyrogram import Client' >> tg_dl_link.py
-            echo 'async def main():' >> tg_dl_link.py
-            echo '    delay = random.uniform(1, 15)' >> tg_dl_link.py
-            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl_link.py
-            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl_link.py
-            echo '        await asyncio.sleep(delay)' >> tg_dl_link.py
-            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
-            echo '    link = os.environ["TG_LINK"].rstrip("/")' >> tg_dl_link.py
-            echo '    parts = link.split("/")' >> tg_dl_link.py
-            echo '    msg_id = int(parts[-1].split("?")[0])' >> tg_dl_link.py
-            echo '    chat_id = int(f"-100{parts[-2]}") if len(parts) > 2 and parts[-3] == "c" else parts[-2]' >> tg_dl_link.py
-            echo '    async with app:' >> tg_dl_link.py
-            echo '        print(f"⬇️ Fetching message {msg_id} from {chat_id}...")' >> tg_dl_link.py
-            echo '        msg = await app.get_messages(chat_id, msg_id)' >> tg_dl_link.py
-            echo '        if not msg or msg.empty or not msg.media:' >> tg_dl_link.py
-            echo '            print("❌ Error: No media found OR Bot is not an Admin/Member of this channel!")' >> tg_dl_link.py
-            echo '            exit(1)' >> tg_dl_link.py
-            echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
-            echo '        await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
-            echo '        fn = "Telegram_Video.mkv"' >> tg_dl_link.py
-            echo '        if getattr(msg, "video", None) and getattr(msg.video, "file_name", None): fn = msg.video.file_name' >> tg_dl_link.py
-            echo '        elif getattr(msg, "document", None) and getattr(msg.document, "file_name", None): fn = msg.document.file_name' >> tg_dl_link.py
-            echo '        with open("tg_fname.txt", "w") as f: f.write(fn)' >> tg_dl_link.py
-            echo 'asyncio.run(main())' >> tg_dl_link.py
-            
-            python3 tg_dl_link.py
-            
-            if [ -z "$CUSTOM" ]; then
-              if [ -f "tg_fname.txt" ]; then
-                RAW_NAME=$(cat tg_fname.txt)
-                FINAL_NAME="${RAW_NAME%.*}.mkv"
-              else
-                FINAL_NAME="Telegram_Video.mkv"
-              fi
+              [ -f "tg_fname.txt" ] && FINAL_NAME="$(cat tg_fname.txt)" || FINAL_NAME="Telegram_Video.mkv"
             else
               FINAL_NAME="${CUSTOM}.mkv"
             fi
             
           else
-            echo "🌐 Standard/Video URL detected. Engaging yt-dlp with MAX aria2c acceleration..."
-            if [ -z "$CUSTOM" ]; then
-              FETCHED_TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
-              FINAL_NAME="${FETCHED_TITLE}.mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
-            
-            yt-dlp \
-              --downloader aria2c \
-              --downloader-args aria2c:"-x 16 -s 16 -k 1M" \
-              --merge-output-format mkv \
-              -o "source.mkv" "$URL"
+            echo "🌐 URL detected..."
+            [ -z "$CUSTOM" ] && FINAL_NAME="$(yt-dlp --get-title "$URL").mkv" || FINAL_NAME="${CUSTOM}.mkv"
+            yt-dlp --downloader aria2c --merge-output-format mkv -o "source.mkv" "$URL"
           fi
           
-          echo "✅ Selected Filename: $FINAL_NAME"
+          FINAL_NAME="${FINAL_NAME%.*}.mkv"
           echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
 
-      - name: 🚀 Execute Sci-Fi Encoder
+      - name: 🚀 Start Encoding
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -203,5 +104,4 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-        run: python main.py
-
+        run: python3 main.py
