@@ -31,14 +31,7 @@ async def async_generate_grid(duration, target_file):
     def sync_grid():
         interval = duration / 10
         select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
-        # OPTIMIZATION: Added -an -sn to ignore audio/subs processing for faster seeking
-        cmd = [
-            "ffmpeg", "-hide_banner", "-i", target_file, 
-            "-an", "-sn", 
-            "-vf", f"{select_filter},scale=480:-1,tile=3x3", 
-            "-frames:v", "1", "-q:v", "3", 
-            config.SCREENSHOT, "-y"
-        ]
+        cmd = ["ffmpeg", "-i", target_file, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", config.SCREENSHOT, "-y"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
@@ -132,30 +125,18 @@ async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app
         print(f"Metrics Capture Error: {e}")
         return "N/A", "N/A"
 
-def get_crop_params(duration):
-    # MULTI-SAMPLE CROP DETECTION
-    # Checks at 20%, 50%, and 80% of video duration to avoid black screens/credits
-    timestamps = [duration * 0.2, duration * 0.5, duration * 0.8]
-    detected_crops = []
-
-    for ts in timestamps:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-ss", str(ts), "-i", config.SOURCE,
-            "-vframes", "20", "-vf", "cropdetect=24:16:0", "-f", "null", "-"
-        ]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            for line in reversed(res.stderr.split('\n')):
-                if "crop=" in line:
-                    crop = line.split("crop=")[1].split(" ")[0]
-                    detected_crops.append(crop)
-                    break
-        except:
-            pass
-            
-    if detected_crops:
-        # Return the most frequent crop value found
-        return max(set(detected_crops), key=detected_crops.count)
+def get_crop_params():
+    cmd = [
+        "ffmpeg", "-skip_frame", "nokey", "-ss", "00:01:00", "-i", config.SOURCE,
+        "-vframes", "100", "-vf", "cropdetect", "-f", "null", "-"
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        for line in reversed(res.stderr.split('\n')):
+            if "crop=" in line:
+                return line.split("crop=")[1].split(" ")[0]
+    except:
+        pass
     return None
 
 def select_params(height):
