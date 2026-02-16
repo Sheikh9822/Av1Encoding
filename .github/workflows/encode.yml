@@ -1,4 +1,4 @@
-name: AV1 Dual-Lane Pipeline
+name: AV1 Split Pipeline
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
 on:
@@ -35,9 +35,11 @@ on:
 jobs:
   download_phase:
     runs-on: ubuntu-latest
-    # Creates two lanes: telegram-lane-0 and telegram-lane-1
+    # JOB-LEVEL CONCURRENCY:
+    # This ensures only 1 download happens at a time to avoid FloodWait.
+    # New downloads will wait in a queue.
     concurrency:
-      group: telegram-lane-${{ github.run_number % 2 }}
+      group: telegram-download-queue
       cancel-in-progress: false
     outputs:
       final_name: ${{ steps.get_name.outputs.NAME }}
@@ -60,7 +62,7 @@ jobs:
           path: tg_session_dir
           key: tg-session-master
 
-      - name: 📥 Download
+      - name: 📥 Download from Telegram
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -75,7 +77,7 @@ jobs:
           FN=$(cat tg_fname.txt)
           echo "NAME=$FN" >> $GITHUB_OUTPUT
 
-      - name: 📦 Upload Artifact
+      - name: 📦 Upload to Internal Storage
         uses: actions/upload-artifact@v4
         with:
           name: payload-${{ github.run_id }}
@@ -86,8 +88,10 @@ jobs:
           compression-level: 0
 
   encode_phase:
+    # This job starts as soon as its specific download_phase finishes
     needs: download_phase
     runs-on: ubuntu-latest
+    # NO CONCURRENCY HERE: Allows multiple encodes to run in parallel
     timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
@@ -104,12 +108,12 @@ jobs:
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📥 Fetch Artifact
+      - name: 📥 Fetch from Internal Storage
         uses: actions/download-artifact@v4
         with:
           name: payload-${{ github.run_id }}
 
-      - name: 🚀 Encode
+      - name: 🚀 Start Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
