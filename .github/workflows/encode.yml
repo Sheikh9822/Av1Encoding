@@ -1,4 +1,4 @@
-name: AV1 Split Pipeline
+name: AV1 Universal Pipeline
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
 on:
@@ -7,7 +7,7 @@ on:
       ui_title:
         description: 'Dashboard Title'
       video_url:
-        description: 'Telegram Link'
+        description: 'Link (TG, M3U8, or Direct CDN)'
         required: true
       custom_name:
         description: 'Output Filename'
@@ -33,13 +33,20 @@ on:
         default: 'true'
 
 jobs:
+  # PHASE 1: SMART DOWNLOADER
   download_phase:
     runs-on: ubuntu-latest
-    # JOB-LEVEL CONCURRENCY:
-    # This ensures only 1 download happens at a time to avoid FloodWait.
-    # New downloads will wait in a queue.
     concurrency:
-      group: telegram-download-queue
+      # Non-Telegram links start instantly. TG links sorted into 3 lanes (A, B, C).
+      group: >-
+        ${{ 
+          (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id || 
+          (
+            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'tg-lane-A' ||
+            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'tg-lane-B' || 
+            'tg-lane-C'
+          )
+        }}
       cancel-in-progress: false
     outputs:
       final_name: ${{ steps.get_name.outputs.NAME }}
@@ -51,7 +58,9 @@ jobs:
           cache: 'pip'
 
       - name: 🛠 Install Tools
-        run: pip install pyrogram tgcrypto
+        run: |
+          sudo apt-get update && sudo apt-get install -y aria2
+          pip install pyrogram tgcrypto yt-dlp
 
       - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
@@ -62,22 +71,36 @@ jobs:
           path: tg_session_dir
           key: tg-session-master
 
-      - name: 📥 Download from Telegram
+      - name: 📥 Universal Download
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
-        run: python3 tg_handler.py
+          CUSTOM: ${{ github.event.inputs.custom_name }}
+        run: |
+          URL="${{ github.event.inputs.video_url }}"
+          if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
+            python3 tg_handler.py
+          elif [[ "$URL" == magnet:* ]]; then
+            echo "❌ ERROR: Magnet links are disabled for safety." && exit 1
+          else
+            if [ -z "$CUSTOM" ]; then
+                TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
+                FN="${TITLE}.mkv"
+            else
+                FN="${CUSTOM}.mkv"
+            fi
+            yt-dlp --downloader aria2c --downloader-args "aria2c:-x 16 -s 16" --merge-output-format mkv -o "source.mkv" "$URL"
+            echo "$FN" > tg_fname.txt
+          fi
 
       - name: 🏷 Extract Filename
         id: get_name
-        run: |
-          FN=$(cat tg_fname.txt)
-          echo "NAME=$FN" >> $GITHUB_OUTPUT
+        run: echo "NAME=$(cat tg_fname.txt)" >> $GITHUB_OUTPUT
 
-      - name: 📦 Upload to Internal Storage
+      - name: 📦 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: payload-${{ github.run_id }}
@@ -87,12 +110,10 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # PHASE 2: PARALLEL ENCODER
   encode_phase:
-    # This job starts as soon as its specific download_phase finishes
     needs: download_phase
     runs-on: ubuntu-latest
-    # NO CONCURRENCY HERE: Allows multiple encodes to run in parallel
-    timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -100,7 +121,7 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: 🛠 Install Tools
+      - name: 🛠 Install Encoding Tools
         run: |
           sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
           pip install -r requirements.txt
@@ -108,12 +129,12 @@ jobs:
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📥 Fetch from Internal Storage
+      - name: 📥 Fetch Payload
         uses: actions/download-artifact@v4
         with:
           name: payload-${{ github.run_id }}
 
-      - name: 🚀 Start Encoder
+      - name: 🚀 Start Parallel Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
