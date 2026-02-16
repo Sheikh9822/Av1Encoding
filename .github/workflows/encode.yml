@@ -67,10 +67,13 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
+      - name: 📁 Create Session Directory
+        run: mkdir -p tg_session_dir
+
       - name: 💾 Cache Telegram MTProto Session
         uses: actions/cache@v4
         with:
-          path: tg_dl_session.session
+          path: tg_session_dir
           key: telegram-session-v1
 
       - name: 📥 Universal Download Core & Name Extraction
@@ -114,10 +117,10 @@ jobs:
             echo 'from pyrogram import Client' >> tg_dl.py
             echo 'async def main():' >> tg_dl.py
             echo '    delay = random.uniform(1, 15)' >> tg_dl.py
-            echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl.py
+            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl.py
             echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl.py
             echo '        await asyncio.sleep(delay)' >> tg_dl.py
-            echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
+            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
             echo '    async with app:' >> tg_dl.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
             echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
@@ -133,10 +136,10 @@ jobs:
             echo 'from pyrogram import Client' >> tg_dl_link.py
             echo 'async def main():' >> tg_dl_link.py
             echo '    delay = random.uniform(1, 15)' >> tg_dl_link.py
-            echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl_link.py
+            echo '    if not os.path.exists("tg_session_dir/tg_dl_session.session"):' >> tg_dl_link.py
             echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl_link.py
             echo '        await asyncio.sleep(delay)' >> tg_dl_link.py
-            echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
+            echo '    app = Client("tg_session_dir/tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
             echo '    link = os.environ["TG_LINK"].rstrip("/")' >> tg_dl_link.py
             echo '    parts = link.split("/")' >> tg_dl_link.py
             echo '    msg_id = int(parts[-1].split("?")[0])' >> tg_dl_link.py
@@ -201,3 +204,4 @@ jobs:
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
         run: python main.py
+
