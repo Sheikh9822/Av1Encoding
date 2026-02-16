@@ -1,128 +1,119 @@
-name: AV1 Encode & Send
-# The Sci-Fi theme run name
-run-name: "🛰️ [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected Target' }}"
+name: AV1 Dual-Lane Pipeline
+# Unique run name for clarity
+run-name: "🎬 [ENCODE]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
 on:
   workflow_dispatch:
     inputs:
       ui_title:
-        description: 'Dashboard Display Title (For GitHub UI)'
-        required: false
+        description: 'Dashboard Title'
       video_url:
-        description: 'Magnet Link, YouTube URL, or Telegram Link'
+        description: 'Telegram Link'
         required: true
       custom_name:
-        description: 'Output Filename (Optional)'
-        required: false
+        description: 'Output Filename'
       res_choice:
-        description: 'Resolution (e.g., 1080, 720, 480) - Empty for Original'
-        required: false
+        description: 'Resolution'
       custom_crf:
-        description: 'CRF Quality (Default: 42)'
+        description: 'CRF'
         default: '42'
       custom_preset:
-        description: 'SVT-AV1 Preset Speed (Default: 6)'
+        description: 'Preset'
         default: '6'
       film_grain:
-        description: 'Synthetic Grain (0 to 50, 0 = Disabled)'
+        description: 'Grain'
         default: '0'
       audio_mode:
-        description: 'Audio Codec: opus or copy'
+        description: 'Audio Mode'
         default: 'opus'
       audio_bitrate:
-        description: 'Opus Bitrate (128k, 192k, 256k)'
+        description: 'Audio Bitrate'
         default: '128k'
       run_vmaf:
-        description: 'Calculate VMAF Quality Score? (true/false)'
+        description: 'Run VMAF Quality Check?'
         default: 'true'
 
-# Allow simultaneous runs (Independent sessions)
-concurrency:
-  group: ${{ github.run_id }}
-  cancel-in-progress: false
-
 jobs:
-  encode:
+  # STAGE 1: THE DOWNLOADER (Limited to 2 concurrent runs)
+  download_phase:
     runs-on: ubuntu-latest
-    timeout-minutes: 480 # 8 Hour limit for long encodes
-
+    concurrency:
+      # This logic (run_number % 2) creates 2 independent queues (Lane 0 and Lane 1)
+      # allowing exactly 2 downloads to happen at the same time globally.
+      group: telegram-lane-${{ github.run_number % 2 }}
+      cancel-in-progress: false
+    outputs:
+      final_name: ${{ steps.get_name.outputs.NAME }}
     steps:
-      - name: 🛰️ Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-          
-      - name: 🛠 Install System Dependencies & FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl mkvtoolnix aria2
-          pip install -r requirements.txt yt-dlp
-          
-          # Download Static FFmpeg build with libvmaf support
-          echo "⬇️ Downloading Specialized Static FFmpeg..."
-          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
-          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📁 Setup Session Directory
+      - name: 🛠 Install Download Tools
+        run: pip install pyrogram tgcrypto
+
+      - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
 
-      - name: 💾 Cache Telegram Session
+      - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          # Versioned key to allow session updates
-          key: telegram-session-v3-${{ github.run_id }}
-          restore-keys: |
-            telegram-session-v3-
+          key: tg-session-master
 
-      - name: 📥 Universal Download Core
+      - name: 📥 Download from Telegram
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
-        run: |
-          URL="${{ github.event.inputs.video_url }}"
-          CUSTOM="${{ github.event.inputs.custom_name }}"
-          
-          if [[ "$URL" == magnet:* ]]; then
-            echo "🧲 Magnet link detected. Engaging aria2c..."
-            mkdir -p dl_temp
-            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --dir=./dl_temp "$URL"
-            DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
-            [ -z "$CUSTOM" ] && FINAL_NAME="$(basename "$DL_FILE")" || FINAL_NAME="${CUSTOM}.mkv"
-            mv "$DL_FILE" ./source.mkv
-            
-          elif [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
-            echo "📱 Telegram content detected. Engaging tg_handler.py..."
-            python3 tg_handler.py
-            if [ -z "$CUSTOM" ]; then
-              [ -f "tg_fname.txt" ] && FINAL_NAME="$(cat tg_fname.txt)" || FINAL_NAME="Telegram_Video.mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
-            
-          else
-            echo "🌐 Standard URL detected. Engaging yt-dlp..."
-            if [ -z "$CUSTOM" ]; then
-              FINAL_NAME="$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1).mkv"
-            else
-              FINAL_NAME="${CUSTOM}.mkv"
-            fi
-            yt-dlp --downloader aria2c --downloader-args "aria2c:-x 16 -s 16" --merge-output-format mkv -o "source.mkv" "$URL"
-          fi
-          
-          # Final Name Cleanup
-          FINAL_NAME="${FINAL_NAME%.*}.mkv"
-          echo "✅ TARGET FILENAME: $FINAL_NAME"
-          echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
+        run: python3 tg_handler.py
 
-      - name: 🚀 Execute Sci-Fi Encoder
+      - name: 🏷 Extract Filename
+        id: get_name
+        run: |
+          FN=$(cat tg_fname.txt)
+          echo "NAME=$FN" >> $GITHUB_OUTPUT
+
+      - name: 📦 Upload Payload to Internal Storage
+        uses: actions/upload-artifact@v4
+        with:
+          # Unique name per run using run_id
+          name: payload-${{ github.run_id }}
+          path: |
+            source.mkv
+            tg_fname.txt
+          retention-days: 1
+          compression-level: 0 # Speed up upload (no need to zip video)
+
+  # STAGE 2: THE ENCODER (Parallel - Runs as soon as download completes)
+  encode_phase:
+    needs: download_phase
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 🛠 Install Encoding Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
+          pip install -r requirements.txt
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
+
+      - name: 📥 Fetch Payload from Storage
+        uses: actions/download-artifact@v4
+        with:
+          name: payload-${{ github.run_id }}
+
+      - name: 🚀 Start AV1 Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -135,4 +126,5 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
