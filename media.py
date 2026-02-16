@@ -3,6 +3,7 @@ import os
 import subprocess
 import json
 import time
+from collections import Counter
 from pyrogram import enums
 from pyrogram.errors import FloodWait
 
@@ -10,6 +11,7 @@ import config
 from ui import get_vmaf_ui
 
 def get_video_info():
+    """Extracts metadata from the source file using ffprobe."""
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", config.SOURCE]
     res = json.loads(subprocess.check_output(cmd).decode())
     video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
@@ -22,20 +24,66 @@ def get_video_info():
     fps_raw = video_stream.get('r_frame_rate', '24/1')
     fps_val = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
     total_frames = int(video_stream.get('nb_frames', duration * fps_val))
+    
+    # Check for HDR (BT2020 color space)
     is_hdr = 'bt2020' in video_stream.get('color_primaries', 'bt709')
     
     return duration, width, height, is_hdr, total_frames, channels, fps_val
 
 async def async_generate_grid(duration, target_file):
+    """Generates a 3x3 grid of screenshots from the encoded file."""
     loop = asyncio.get_event_loop()
     def sync_grid():
         interval = duration / 10
+        # Select frames at intervals, scale down, and tile them 3x3
         select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
         cmd = ["ffmpeg", "-i", target_file, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", config.SCREENSHOT, "-y"]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await loop.run_in_executor(None, sync_grid)
 
-async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app=None, chat_id=None, status_msg=None):
+def get_crop_params(duration):
+    """
+    Smarter Cropping: Checks 4 points in the video (15%, 35%, 55%, 75%).
+    Only applies crop if at least 3 samples agree (Consensus).
+    """
+    if duration < 10: return None
+
+    test_points = [duration * 0.15, duration * 0.35, duration * 0.55, duration * 0.75]
+    detected_crops = []
+
+    for ts in test_points:
+        time_str = time.strftime('%H:%M:%S', time.gmtime(ts))
+        cmd = [
+            "ffmpeg", "-skip_frame", "nokey", "-ss", time_str, "-i", config.SOURCE,
+            "-vframes", "20", "-vf", "cropdetect=limit=24:round=2", "-f", "null", "-"
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            found_at_ts = []
+            for line in res.stderr.split('\n'):
+                if "crop=" in line:
+                    found_at_ts.append(line.split("crop=")[1].split(" ")[0])
+            
+            if found_at_ts:
+                most_common_at_ts = Counter(found_at_ts).most_common(1)[0][0]
+                detected_crops.append(most_common_at_ts)
+        except: continue
+
+    if not detected_crops: return None
+
+    occurence_count = Counter(detected_crops)
+    most_common_crop, count = occurence_count.most_common(1)[0]
+
+    # Consensus Check: 3 out of 4 samples must match
+    if count >= 3:
+        w, h, x, y = most_common_crop.split(':')
+        if int(x) == 0 and int(y) == 0: return None # No bars detected
+        return most_common_crop
+    
+    return None
+
+async def get_vmaf(output_file, crop_val, width, height, duration, fps, app, chat_id, status_msg):
+    """Calculates VMAF and SSIM scores by sampling 30 seconds of video."""
     ref_w, ref_h = width, height
     if crop_val:
         try:
@@ -43,20 +91,11 @@ async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app
             ref_w, ref_h = parts[0], parts[1]
         except: pass
 
-    if duration > 30:
-        interval = duration / 6
-        select_parts = []
-        for i in range(6):
-            start_t = (i * interval) + (interval / 2) - 2.5
-            end_t = start_t + 5
-            select_parts.append(f"between(t,{start_t},{end_t})")
-        
-        select_expr = "+".join(select_parts)
-        select_filter = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
-        total_vmaf_frames = int(30 * fps)
-    else:
-        select_filter = "setpts=N/FRAME_RATE/TB"
-        total_vmaf_frames = int(duration * fps)
+    # Sampling Logic: Take 6 segments of 5 seconds each
+    interval = duration / 6
+    select_parts = [f"between(t,{(i*interval)+(interval/2)-2.5},{(i*interval)+(interval/2)+2.5})" for i in range(6)]
+    select_filter = f"select='{'+'.join(select_parts)}',setpts=N/FRAME_RATE/TB"
+    total_vmaf_frames = int(30 * fps)
 
     ref_filters = f"crop={crop_val},{select_filter}" if crop_val else select_filter
     dist_filters = f"{select_filter},scale={ref_w}:{ref_h}:flags=bicubic"
@@ -89,18 +128,14 @@ async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app
                         curr_frame = int(line_str.split("=")[1].strip())
                         percent = min(100, (curr_frame / total_vmaf_frames) * 100)
                         now = time.time()
-                        
-                        if now - last_update > 5 and app and status_msg:
+                        if now - last_update > 5:
                             elapsed = now - start_time
                             speed = curr_frame / elapsed if elapsed > 0 else 0
                             eta = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
-                            
                             ui_text = get_vmaf_ui(percent, speed, eta)
-                            
                             try:
                                 await app.edit_message_text(chat_id, status_msg.id, ui_text, parse_mode=enums.ParseMode.HTML)
                                 last_update = now
-                            except FloodWait as e: await asyncio.sleep(e.value)
                             except: pass
                     except: pass
 
@@ -110,7 +145,6 @@ async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app
                 line = await proc.stderr.readline()
                 if not line: break
                 line_str = line.decode('utf-8', errors='ignore').strip()
-                
                 if "VMAF score:" in line_str:
                     vmaf_score = line_str.split("VMAF score:")[1].strip()
                 if "SSIM Y:" in line_str and "All:" in line_str:
@@ -120,32 +154,18 @@ async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, app
         await asyncio.gather(read_progress(), read_stderr())
         await proc.wait()
         return vmaf_score, ssim_score
-        
-    except Exception as e:
-        print(f"Metrics Capture Error: {e}")
+    except:
         return "N/A", "N/A"
 
-def get_crop_params():
-    cmd = [
-        "ffmpeg", "-skip_frame", "nokey", "-ss", "00:01:00", "-i", config.SOURCE,
-        "-vframes", "100", "-vf", "cropdetect", "-f", "null", "-"
-    ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        for line in reversed(res.stderr.split('\n')):
-            if "crop=" in line:
-                return line.split("crop=")[1].split(" ")[0]
-    except:
-        pass
-    return None
-
 def select_params(height):
-    if height >= 2000: return 32, 10
-    elif height >= 1000: return 42, 6
-    elif height >= 700: return 24, 6
-    return 22, 4
+    """Auto-selects CRF and Preset based on resolution if not provided by user."""
+    if height >= 2000: return 28, 10   # 4K
+    elif height >= 1000: return 42, 6  # 1080p
+    elif height >= 700: return 32, 6   # 720p
+    return 24, 4                      # SD
 
 async def upload_to_cloud(filepath):
+    """Uploads file to transfer.sh if it exceeds Telegram's 2GB limit."""
     cmd = ["curl", "-H", "Max-Days: 3", "--upload-file", filepath, f"https://transfer.sh/{os.path.basename(filepath)}"]
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, _ = await proc.communicate()
