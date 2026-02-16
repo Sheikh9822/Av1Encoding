@@ -27,6 +27,19 @@ def get_vmaf_ui(percent, speed, eta):
         f"└────────────────────────────────────┘</code>"
     )
 
+def get_download_ui(percent, speed, size_mb):
+    bar = generate_progress_bar(percent)
+    return (
+        f"<code>┌─── 🛰️ [ SYSTEM.DOWNLOAD.ACTIVE ] ───┐\n"
+        f"│                                    \n"
+        f"│ 📥 STATUS: Fetching from Telegram  \n"
+        f"│ 📊 PROG: {bar} {percent:.1f}%\n"
+        f"│ ⚡ SPEED: {speed:.2f} MB/s\n"
+        f"│ 📦 SIZE: {size_mb:.2f} MB\n"
+        f"│                                    \n"
+        f"└────────────────────────────────────┘</code>"
+    )
+
 def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label, hdr_label, grain_label, u_audio, u_bitrate, size):
     bar = generate_progress_bar(percent)
     return (
