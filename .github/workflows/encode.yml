@@ -67,6 +67,12 @@ jobs:
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
 
+      - name: 💾 Cache Telegram MTProto Session
+        uses: actions/cache@v4
+        with:
+          path: tg_dl_session.session
+          key: telegram-session-v1
+
       - name: 📥 Universal Download Core & Name Extraction
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
@@ -116,7 +122,6 @@ jobs:
             
             python3 tg_dl.py
             
-          # NEW: Handle standard t.me Post Links using Pyrogram instead of yt-dlp
           elif [[ "$URL" == https://t.me/* ]]; then
             echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
             export TG_LINK="$URL"
