@@ -1,65 +1,86 @@
 name: AV1 Encode & Send
-run-name: "Encoding: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected' }}"
+# The Sci-Fi theme run name
+run-name: "🛰️ [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Auto-Detected Target' }}"
 
 on:
   workflow_dispatch:
     inputs:
       ui_title:
-        description: 'Dashboard Display Title'
+        description: 'Dashboard Display Title (For GitHub UI)'
+        required: false
       video_url:
-        description: 'Magnet, YouTube, or Telegram Link'
+        description: 'Magnet Link, YouTube URL, or Telegram Link'
         required: true
       custom_name:
         description: 'Output Filename (Optional)'
+        required: false
       res_choice:
-        description: 'Resolution (e.g. 1080, 720)'
+        description: 'Resolution (e.g., 1080, 720, 480) - Empty for Original'
+        required: false
       custom_crf:
-        description: 'CRF (Default 42)'
+        description: 'CRF Quality (Default: 42)'
         default: '42'
       custom_preset:
-        description: 'Preset (Default 6)'
+        description: 'SVT-AV1 Preset Speed (Default: 6)'
         default: '6'
       film_grain:
-        description: 'Grain (0-50)'
+        description: 'Synthetic Grain (0 to 50, 0 = Disabled)'
         default: '0'
       audio_mode:
-        description: 'Audio: opus or copy'
+        description: 'Audio Codec: opus or copy'
         default: 'opus'
       audio_bitrate:
-        description: 'Audio Bitrate (e.g. 128k)'
+        description: 'Opus Bitrate (128k, 192k, 256k)'
         default: '128k'
       run_vmaf:
-        description: 'Run VMAF Analysis? (true/false)'
+        description: 'Calculate VMAF Quality Score? (true/false)'
         default: 'true'
+
+# Allow simultaneous runs (Independent sessions)
+concurrency:
+  group: ${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   encode:
     runs-on: ubuntu-latest
+    timeout-minutes: 480 # 8 Hour limit for long encodes
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 🛰️ Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
           
-      - name: 🛠 Install FFmpeg & Tools
+      - name: 🛠 Install System Dependencies & FFmpeg
         run: |
-          sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix
-          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y curl mkvtoolnix aria2
+          pip install -r requirements.txt yt-dlp
+          
+          # Download Static FFmpeg build with libvmaf support
+          echo "⬇️ Downloading Specialized Static FFmpeg..."
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📁 Setup Session Directory & Cache
+      - name: 📁 Setup Session Directory
         run: mkdir -p tg_session_dir
 
       - name: 💾 Cache Telegram Session
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-v2
+          # Versioned key to allow session updates
+          key: telegram-session-v3-${{ github.run_id }}
+          restore-keys: |
+            telegram-session-v3-
 
-      - name: 📥 Download Video
+      - name: 📥 Universal Download Core
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -70,13 +91,15 @@ jobs:
           CUSTOM="${{ github.event.inputs.custom_name }}"
           
           if [[ "$URL" == magnet:* ]]; then
+            echo "🧲 Magnet link detected. Engaging aria2c..."
             mkdir -p dl_temp
-            aria2c --seed-time=0 --max-connection-per-server=16 --dir=./dl_temp "$URL"
+            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --dir=./dl_temp "$URL"
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
             [ -z "$CUSTOM" ] && FINAL_NAME="$(basename "$DL_FILE")" || FINAL_NAME="${CUSTOM}.mkv"
             mv "$DL_FILE" ./source.mkv
             
           elif [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
+            echo "📱 Telegram content detected. Engaging tg_handler.py..."
             python3 tg_handler.py
             if [ -z "$CUSTOM" ]; then
               [ -f "tg_fname.txt" ] && FINAL_NAME="$(cat tg_fname.txt)" || FINAL_NAME="Telegram_Video.mkv"
@@ -85,14 +108,21 @@ jobs:
             fi
             
           else
-            [ -z "$CUSTOM" ] && FINAL_NAME="$(yt-dlp --get-title "$URL").mkv" || FINAL_NAME="${CUSTOM}.mkv"
-            yt-dlp --downloader aria2c --merge-output-format mkv -o "source.mkv" "$URL"
+            echo "🌐 Standard URL detected. Engaging yt-dlp..."
+            if [ -z "$CUSTOM" ]; then
+              FINAL_NAME="$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1).mkv"
+            else
+              FINAL_NAME="${CUSTOM}.mkv"
+            fi
+            yt-dlp --downloader aria2c --downloader-args "aria2c:-x 16 -s 16" --merge-output-format mkv -o "source.mkv" "$URL"
           fi
           
+          # Final Name Cleanup
           FINAL_NAME="${FINAL_NAME%.*}.mkv"
+          echo "✅ TARGET FILENAME: $FINAL_NAME"
           echo "FILE_NAME=$FINAL_NAME" >> $GITHUB_ENV
 
-      - name: 🚀 Execute Encoder
+      - name: 🚀 Execute Sci-Fi Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
