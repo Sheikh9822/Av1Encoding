@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tg_dl_session.session
-          key: telegram-session-v1
+          key: telegram-session-v2
 
       - name: 📥 Universal Download Core & Name Extraction
         env:
@@ -110,8 +110,10 @@ jobs:
             
             export FILE_ID
             
+            # YAML-SAFE Python Script Generation
             echo 'import asyncio, os, random' > tg_dl.py
             echo 'from pyrogram import Client' >> tg_dl.py
+            echo 'from pyrogram.errors import FloodWait' >> tg_dl.py
             echo 'async def main():' >> tg_dl.py
             echo '    delay = random.uniform(1, 15)' >> tg_dl.py
             echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl.py
@@ -119,8 +121,14 @@ jobs:
             echo '        await asyncio.sleep(delay)' >> tg_dl.py
             echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
             echo '    async with app:' >> tg_dl.py
-            echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
-            echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
+            echo '        while True:' >> tg_dl.py
+            echo '            try:' >> tg_dl.py
+            echo '                print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
+            echo '                await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
+            echo '                break' >> tg_dl.py
+            echo '            except FloodWait as e:' >> tg_dl.py
+            echo '                print(f"⚠️ FloodWait Triggered: Sleeping for {e.value} seconds before retrying...")' >> tg_dl.py
+            echo '                await asyncio.sleep(e.value + 5)' >> tg_dl.py
             echo 'asyncio.run(main())' >> tg_dl.py
             
             python3 tg_dl.py
@@ -129,8 +137,10 @@ jobs:
             echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
             export TG_LINK="$URL"
             
+            # YAML-SAFE Python Script Generation
             echo 'import asyncio, os, random' > tg_dl_link.py
             echo 'from pyrogram import Client' >> tg_dl_link.py
+            echo 'from pyrogram.errors import FloodWait' >> tg_dl_link.py
             echo 'async def main():' >> tg_dl_link.py
             echo '    delay = random.uniform(1, 15)' >> tg_dl_link.py
             echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl_link.py
@@ -143,16 +153,22 @@ jobs:
             echo '    chat_id = int(f"-100{parts[-2]}") if len(parts) > 2 and parts[-3] == "c" else parts[-2]' >> tg_dl_link.py
             echo '    async with app:' >> tg_dl_link.py
             echo '        print(f"⬇️ Fetching message {msg_id} from {chat_id}...")' >> tg_dl_link.py
-            echo '        msg = await app.get_messages(chat_id, msg_id)' >> tg_dl_link.py
-            echo '        if not msg or msg.empty or not msg.media:' >> tg_dl_link.py
-            echo '            print("❌ Error: No media found OR Bot is not an Admin/Member of this channel!")' >> tg_dl_link.py
-            echo '            exit(1)' >> tg_dl_link.py
-            echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
-            echo '        await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
-            echo '        fn = "Telegram_Video.mkv"' >> tg_dl_link.py
-            echo '        if getattr(msg, "video", None) and getattr(msg.video, "file_name", None): fn = msg.video.file_name' >> tg_dl_link.py
-            echo '        elif getattr(msg, "document", None) and getattr(msg.document, "file_name", None): fn = msg.document.file_name' >> tg_dl_link.py
-            echo '        with open("tg_fname.txt", "w") as f: f.write(fn)' >> tg_dl_link.py
+            echo '        while True:' >> tg_dl_link.py
+            echo '            try:' >> tg_dl_link.py
+            echo '                msg = await app.get_messages(chat_id, msg_id)' >> tg_dl_link.py
+            echo '                if not msg or msg.empty or not msg.media:' >> tg_dl_link.py
+            echo '                    print("❌ Error: No media found OR Bot is not an Admin/Member of this channel!")' >> tg_dl_link.py
+            echo '                    exit(1)' >> tg_dl_link.py
+            echo '                print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
+            echo '                await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
+            echo '                fn = "Telegram_Video.mkv"' >> tg_dl_link.py
+            echo '                if getattr(msg, "video", None) and getattr(msg.video, "file_name", None): fn = msg.video.file_name' >> tg_dl_link.py
+            echo '                elif getattr(msg, "document", None) and getattr(msg.document, "file_name", None): fn = msg.document.file_name' >> tg_dl_link.py
+            echo '                with open("tg_fname.txt", "w") as f: f.write(fn)' >> tg_dl_link.py
+            echo '                break' >> tg_dl_link.py
+            echo '            except FloodWait as e:' >> tg_dl_link.py
+            echo '                print(f"⚠️ FloodWait Triggered: Sleeping for {e.value} seconds before retrying...")' >> tg_dl_link.py
+            echo '                await asyncio.sleep(e.value + 5)' >> tg_dl_link.py
             echo 'asyncio.run(main())' >> tg_dl_link.py
             
             python3 tg_dl_link.py
