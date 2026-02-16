@@ -1,141 +1,223 @@
 import asyncio
-import json
 import os
 import time
+import logging
 import subprocess
+from pyrogram import Client, enums
+from pyrogram.errors import FloodWait
+
 import config
+import ui
+import media
 
-async def run_cmd_async(*args):
-    """Utility to run a command asynchronously and return stdout and stderr."""
-    proc = await asyncio.create_subprocess_exec(
-        *args, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    return stdout.decode().strip(), stderr.decode().strip()
+# Proper Python logging avoids printing directly to stdout incorrectly
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-async def get_video_info(source_file):
-    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", source_file]
-    stdout, _ = await run_cmd_async(*cmd)
-    res = json.loads(stdout)
-    video_stream = next(s for s in res['streams'] if s['codec_type'] == 'video')
-    audio_stream = next((s for s in res['streams'] if s['codec_type'] == 'audio'), {})
-    
-    channels = int(audio_stream.get('channels', 0))
-    duration = float(res['format'].get('duration', 0))
-    width = int(video_stream.get('width', 0))
-    height = int(video_stream.get('height', 0))
-    fps_raw = video_stream.get('r_frame_rate', '24/1')
-    fps_val = eval(fps_raw) if '/' in fps_raw else float(fps_raw)
-    total_frames = int(video_stream.get('nb_frames', duration * fps_val))
-    is_hdr = 'bt2020' in video_stream.get('color_primaries', 'bt709')
-    
-    return duration, width, height, is_hdr, total_frames, channels, fps_val
-
-async def get_crop_params(source_file):
-    cmd = [
-        "ffmpeg", "-skip_frame", "nokey", "-ss", "00:01:00", "-i", source_file,
-        "-vframes", "100", "-vf", "cropdetect", "-f", "null", "-"
-    ]
-    _, stderr = await run_cmd_async(*cmd)
-    for line in reversed(stderr.split('\n')):
-        if "crop=" in line:
-            return line.split("crop=")[1].split(" ")[0]
-    return None
-
-def select_params(height):
-    if height >= 2000: return 32, 10
-    elif height >= 1000: return 42, 6
-    elif height >= 700: return 24, 6
-    return 22, 4
-
-async def async_generate_grid(duration, target_file, output_img):
-    interval = duration / 10
-    select_filter = "select='" + "+".join([f"between(t,{i*interval}-0.1,{i*interval}+0.1)" for i in range(1, 10)]) + "',setpts=N/FRAME_RATE/TB"
-    cmd = ["ffmpeg", "-i", target_file, "-vf", f"{select_filter},scale=480:-1,tile=3x3", "-frames:v", "1", "-q:v", "3", output_img, "-y"]
-    await run_cmd_async(*cmd)
-
-async def upload_to_cloud(filepath):
-    cmd = ["curl", "-H", "Max-Days: 3", "--upload-file", filepath, f"https://transfer.sh/{os.path.basename(filepath)}"]
-    stdout, _ = await run_cmd_async(*cmd)
-    return stdout
-
-async def get_vmaf(output_file, crop_val, width, height, duration=0, fps=24, progress_callback=None):
-    ref_w, ref_h = width, height
-    if crop_val:
-        try:
-            parts = crop_val.split(':')
-            ref_w, ref_h = parts[0], parts[1]
-        except Exception: pass
-
-    if duration > 30:
-        interval = duration / 6
-        select_parts = []
-        for i in range(6):
-            start_t = (i * interval) + (interval / 2) - 2.5
-            end_t = start_t + 5
-            select_parts.append(f"between(t,{start_t},{end_t})")
-        
-        select_expr = "+".join(select_parts)
-        select_filter = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
-        total_vmaf_frames = int(30 * fps)
-    else:
-        select_filter = "setpts=N/FRAME_RATE/TB"
-        total_vmaf_frames = int(duration * fps)
-
-    ref_filters = f"crop={crop_val},{select_filter}" if crop_val else select_filter
-    dist_filters = f"{select_filter},scale={ref_w}:{ref_h}:flags=bicubic"
-
-    filter_graph = (
-        f"[1:v]{ref_filters}[r];"
-        f"[0:v]{dist_filters}[d];"
-        f"[d]split=2[d1][d2];"
-        f"[r]split=2[r1][r2];"
-        f"[d1][r1]libvmaf;"
-        f"[d2][r2]ssim"
-    )
-
-    cmd = ["ffmpeg", "-threads", "0", "-i", output_file, "-i", config.SOURCE, "-filter_complex", filter_graph, "-progress", "pipe:1", "-nostats", "-f", "null", "-"]
+async def run_encode():
+    app = Client(":memory:", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN)
     
     try:
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        start_time = time.time()
-        vmaf_score, ssim_score = "N/A", "N/A"
-        
-        async def read_progress():
-            while True:
-                line = await proc.stdout.readline()
-                if not line: break
-                line_str = line.decode().strip()
-                if line_str.startswith("frame="):
-                    try:
-                        curr_frame = int(line_str.split("=")[1].strip())
-                        percent = min(100, (curr_frame / total_vmaf_frames) * 100)
-                        elapsed = time.time() - start_time
-                        speed = curr_frame / elapsed if elapsed > 0 else 0
-                        eta = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
-                        
-                        # Pass UI updating responsibilities back up to main.py
-                        if progress_callback:
-                            await progress_callback(percent, speed, eta)
-                    except Exception: pass
-
-        async def read_stderr():
-            nonlocal vmaf_score, ssim_score
-            while True:
-                line = await proc.stderr.readline()
-                if not line: break
-                line_str = line.decode('utf-8', errors='ignore').strip()
-                
-                if "VMAF score:" in line_str:
-                    vmaf_score = line_str.split("VMAF score:")[1].strip()
-                if "SSIM Y:" in line_str and "All:" in line_str:
-                    try: ssim_score = line_str.split("All:")[1].split(" ")[0]
-                    except Exception: pass
-
-        await asyncio.gather(read_progress(), read_stderr())
-        await proc.wait()
-        return vmaf_score, ssim_score
-        
+        await app.start()
+        status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
     except Exception as e:
-        print(f"Metrics Capture Error: {e}")
-        return "N/A", "N/A"
+        logger.error(f"Failed to start bot or send initial message: {e}")
+        return
+
+    try:
+        duration, width, height, is_hdr, total_frames, channels, fps_val = await media.get_video_info(config.SOURCE)
+    except Exception as e:
+        logger.error(f"Metadata error: {e}")
+        await app.edit_message_text(config.CHAT_ID, status.id, "❌ <b>Metadata Extraction Failed!</b>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    def_crf, def_preset = media.select_params(height)
+    final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
+    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
+    
+    res_label = config.USER_RES if config.USER_RES else f"{height}p"
+    hdr_label = "HDR10" if is_hdr else "SDR"
+    grain_label = f" | Grain: {config.USER_GRAIN}" if config.USER_GRAIN > 0 else ""
+    
+    crop_val = await media.get_crop_params(config.SOURCE)
+    vf_filters = []
+    if crop_val: vf_filters.append(f"crop={crop_val}")
+    if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
+    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
+    
+    if channels == 0: audio_cmd = []
+    elif config.AUDIO_MODE == "opus":
+        calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
+        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
+    else: audio_cmd = ["-c:a", "copy"]
+
+    hdr_params = ":enable-hdr=1" if is_hdr else ""
+    grain_params = f":film-grain={config.USER_GRAIN}:film-grain-denoise=0" if config.USER_GRAIN > 0 else ""
+    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
+
+    cmd = [
+        "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
+        *video_filters,
+        "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
+        "-crf", str(final_crf), "-preset", str(final_preset),
+        "-svtav1-params", svtav1_tune,
+        "-threads", "0",
+        *audio_cmd, "-c:s", "copy",
+        "-progress", "pipe:1", "-nostats", "-y", config.FILE_NAME
+    ]
+
+    logger.info("Starting encode process...")
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    
+    start_time, last_update = time.time(), 0
+    
+    with open(config.LOG_FILE, "w") as f_log:
+        while True:
+            line = await proc.stdout.readline()
+            if not line: break
+            
+            line_str = line.decode('utf-8', errors='ignore')
+            f_log.write(line_str)
+            
+            if "out_time_ms" in line_str:
+                try:
+                    curr_sec = int(line_str.split("=")[1]) / 1_000_000
+                    percent = (curr_sec / duration) * 100
+                    elapsed = time.time() - start_time
+                    speed = curr_sec / elapsed if elapsed > 0 else 0
+                    fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
+                    eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
+                    
+                    if time.time() - last_update > 8:
+                        bar = ui.generate_progress_bar(percent)
+                        size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
+                        crop_label = f" | Cropped" if crop_val else ""
+                        
+                        scifi_ui = (
+                            f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
+                            f"│                                    \n"
+                            f"│ 📂 FILE: {config.FILE_NAME}\n"
+                            f"│ ⚡ SPEED: {speed:.1f}x ({int(fps)} FPS)\n"
+                            f"│ ⏳ TIME: {ui.format_time(elapsed)} / ETA: {ui.format_time(eta)}\n"
+                            f"│ 🕒 DONE: {ui.format_time(curr_sec)} / {ui.format_time(duration)}\n"
+                            f"│                                    \n"
+                            f"│ 📊 PROG: {bar} {percent:.1f}% \n"
+                            f"│                                    \n"
+                            f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
+                            f"│ 🎞️ VIDEO: {res_label}{crop_label} | 10-bit | {hdr_label}{grain_label}\n"
+                            f"│ 🔊 AUDIO: {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}\n"
+                            f"│ 📦 SIZE: {size:.2f} MB\n"
+                            f"│                                    \n"
+                            f"└────────────────────────────────────┘</code>"
+                        )
+                        try:
+                            await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
+                            last_update = time.time()
+                        except FloodWait as e:
+                            await asyncio.sleep(e.value)
+                        except Exception: 
+                            continue
+                except Exception: 
+                    continue
+
+    await proc.wait()
+    total_mission_time = time.time() - start_time
+
+    if proc.returncode != 0:
+        await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="❌ <b>CRITICAL ERROR: Core Failure</b>", parse_mode=enums.ParseMode.HTML)
+        await app.stop()
+        return
+
+    await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
+    
+    # Non-blocking async Remux
+    fixed_file = f"FIXED_{config.FILE_NAME}"
+    remux_cmd = ["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE]
+    remux_proc = await asyncio.create_subprocess_exec(*remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    await remux_proc.wait()
+
+    if os.path.exists(fixed_file):
+        os.remove(config.FILE_NAME)
+        os.rename(fixed_file, config.FILE_NAME)
+
+    # Grid Generation
+    grid_task = asyncio.create_task(media.async_generate_grid(duration, config.FILE_NAME, config.SCREENSHOT))
+    
+    # Connect VMAF Logic smoothly to UI
+    vmaf_val, ssim_val = "N/A", "N/A"
+    if config.RUN_VMAF:
+        vmaf_state = {'last_update': 0}
+        
+        async def handle_vmaf_progress(percent, speed, eta):
+            await ui.vmaf_progress(percent, speed, eta, app, config.CHAT_ID, status, vmaf_state)
+            
+        vmaf_val, ssim_val = await media.get_vmaf(
+            config.FILE_NAME, crop_val, width, height, duration, fps_val, 
+            progress_callback=handle_vmaf_progress
+        )
+
+    await grid_task
+    final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
+
+    if final_size > 1990:
+        await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
+        cloud_url = await media.upload_to_cloud(config.FILE_NAME)
+        
+        overflow_report = (
+            f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL (OVERFLOW)</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code> (Exceeds Telegram limit)\n"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+            f"☁️ <b>EXTERNAL UPLINK (Valid 3 days):</b>\n{cloud_url}\n\n"
+            f"<i>Sending process logs below.</i>"
+        )
+        await app.send_message(config.CHAT_ID, overflow_report, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+        await app.send_document(config.CHAT_ID, config.LOG_FILE)
+        
+        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
+            if os.path.exists(f): os.remove(f)
+        await app.stop()
+        return
+
+    photo_msg = None
+    if os.path.exists(config.SCREENSHOT):
+        photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
+
+    report = (
+        f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
+        f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+        f"⏱ <b>ENCODE TIME:</b> <code>{ui.format_time(total_mission_time)}</code>\n"
+        f"📦 <b>FINAL SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+        f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+        f"🛠 <b>ENCODE SPECS:</b>\n"
+        f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
+        f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label} | 10-bit{grain_label}\n"
+        f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
+    )
+
+    await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
+
+    upload_state_tracker = {'last_update': 0}
+    await app.send_document(
+        chat_id=config.CHAT_ID, 
+        document=config.FILE_NAME, 
+        caption=report,
+        parse_mode=enums.ParseMode.HTML,
+        reply_to_message_id=photo_msg.id if photo_msg else None,
+        progress=ui.upload_progress,
+        progress_args=(app, config.CHAT_ID, status, config.FILE_NAME, upload_state_tracker)
+    )
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
+
+    # Cleanup Files
+    for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
+        if os.path.exists(f): os.remove(f)
+
+    await app.stop()
+
+if __name__ == "__main__":
+    asyncio.run(run_encode())
