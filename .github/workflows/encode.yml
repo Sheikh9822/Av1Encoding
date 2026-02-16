@@ -36,8 +36,10 @@ jobs:
   # PHASE 1: SMART DOWNLOADER
   download_phase:
     runs-on: ubuntu-latest
+    # SMART CONCURRENCY:
+    # 1. Non-TG Links: Start Instantly (unique group)
+    # 2. TG Links: Sorted into 3 lanes (A, B, C) to avoid FloodWait
     concurrency:
-      # Non-Telegram links start instantly. TG links sorted into 3 lanes (A, B, C).
       group: >-
         ${{ 
           (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id || 
@@ -65,6 +67,7 @@ jobs:
       - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
 
+      # Important: Restore the master session so the bot is logged in
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
@@ -81,10 +84,14 @@ jobs:
           CUSTOM: ${{ github.event.inputs.custom_name }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
+          
+          # Telegram Logic
           if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
             python3 tg_handler.py
+          # Magnet Safety
           elif [[ "$URL" == magnet:* ]]; then
-            echo "❌ ERROR: Magnet links are disabled for safety." && exit 1
+            echo "❌ ERROR: Magnet links are disabled." && exit 1
+          # Direct/YT-DLP Logic
           else
             if [ -z "$CUSTOM" ]; then
                 TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
@@ -134,12 +141,33 @@ jobs:
         with:
           name: payload-${{ github.run_id }}
 
+      # RESTORE SESSION FOR ENCODER (Crucial for FloodWait Fix)
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-master
+
+      # PRE-AUTHORIZATION STEP
+      - name: 🔑 Authorize Bot Session
+        run: |
+          # Copy the master session to 'enc_session.session'
+          # main.py will use this file to skip the Login process
+          if [ -f "tg_session_dir/tg_dl_session.session" ]; then
+            cp tg_session_dir/tg_dl_session.session ./enc_session.session
+            echo "✅ Session copied successfully."
+          else
+            echo "⚠️ Master session not found in cache. First run might be slower."
+          fi
+
       - name: 🚀 Start Parallel Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # This tells main.py to use the file we just copied
+          SESSION_NAME: "enc_session"
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
