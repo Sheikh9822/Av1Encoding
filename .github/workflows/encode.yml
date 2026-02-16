@@ -85,7 +85,6 @@ jobs:
           if [[ "$URL" == magnet:* ]]; then
             echo "🧲 Magnet link detected. Engaging aria2c at MAX speed..."
             mkdir -p dl_temp
-            # Maxed out aria2c params for torrents/magnets
             aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --min-split-size=1M --dir=./dl_temp "$URL"
             
             DL_FILE=$(find ./dl_temp -type f -size +50M | head -n 1)
@@ -111,9 +110,13 @@ jobs:
             
             export FILE_ID
             
-            echo 'import asyncio, os' > tg_dl.py
+            echo 'import asyncio, os, random' > tg_dl.py
             echo 'from pyrogram import Client' >> tg_dl.py
             echo 'async def main():' >> tg_dl.py
+            echo '    delay = random.uniform(1, 15)' >> tg_dl.py
+            echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl.py
+            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl.py
+            echo '        await asyncio.sleep(delay)' >> tg_dl.py
             echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl.py
             echo '    async with app:' >> tg_dl.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
@@ -126,9 +129,13 @@ jobs:
             echo "📱 Telegram Post Link detected. Engaging Pyrogram MTProto Downloader..."
             export TG_LINK="$URL"
             
-            echo 'import asyncio, os' > tg_dl_link.py
+            echo 'import asyncio, os, random' > tg_dl_link.py
             echo 'from pyrogram import Client' >> tg_dl_link.py
             echo 'async def main():' >> tg_dl_link.py
+            echo '    delay = random.uniform(1, 15)' >> tg_dl_link.py
+            echo '    if not os.path.exists("tg_dl_session.session"):' >> tg_dl_link.py
+            echo '        print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")' >> tg_dl_link.py
+            echo '        await asyncio.sleep(delay)' >> tg_dl_link.py
             echo '    app = Client("tg_dl_session", api_id=int(os.environ["TG_API_ID"]), api_hash=os.environ["TG_API_HASH"], bot_token=os.environ["TG_BOT_TOKEN"])' >> tg_dl_link.py
             echo '    link = os.environ["TG_LINK"].rstrip("/")' >> tg_dl_link.py
             echo '    parts = link.split("/")' >> tg_dl_link.py
@@ -170,7 +177,6 @@ jobs:
               FINAL_NAME="${CUSTOM}.mkv"
             fi
             
-            # Using aria2c as external downloader maxed out to 16 connections and 1M chunks
             yt-dlp \
               --downloader aria2c \
               --downloader-args aria2c:"-x 16 -s 16 -k 1M" \
