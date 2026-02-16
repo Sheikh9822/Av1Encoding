@@ -44,7 +44,11 @@ async def main():
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    async with Client(":memory:", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
+    # Ensure the cache directory exists before Pyrogram tries to write to it
+    os.makedirs("tg_session_dir", exist_ok=True)
+
+    # Replaced ":memory:" with a persistent file path inside the cached folder
+    async with Client("tg_session_dir/bot_session", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
         try:
             status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
         except FloodWait as e:
