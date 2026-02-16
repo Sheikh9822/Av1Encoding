@@ -27,7 +27,9 @@ async def main():
     hdr_label = "HDR10" if is_hdr else "SDR"
     grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
     
+    # FIX: Pass duration to get_crop_params for multi-point sampling
     crop_val = get_crop_params(duration)
+    
     vf_filters = []
     if crop_val: vf_filters.append(f"crop={crop_val}")
     if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
@@ -44,9 +46,10 @@ async def main():
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
-    async with Client(":memory:", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
+    # FIX: Use the session name from config (enc_session) to reuse authorization
+    async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
         try:
-            status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
+            status = await app.send_message(config.CHAT_ID, f"📡 <b>[ SYSTEM ONLINE ] Processing: {config.FILE_NAME}</b>", parse_mode=enums.ParseMode.HTML)
         except FloodWait as e:
             await asyncio.sleep(e.value + 2)
             status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
@@ -90,9 +93,6 @@ async def main():
                             try:
                                 await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
                                 last_update = time.time()
-                            except FloodWait as e:
-                                await asyncio.sleep(e.value)
-                                last_update = time.time() + e.value
                             except: continue
                     except: continue
 
@@ -174,10 +174,8 @@ async def main():
             progress_args=(app, config.CHAT_ID, status, config.FILE_NAME)
         )
         
-        try:
-            await status.delete()
-        except:
-            pass
+        try: await status.delete()
+        except: pass
 
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE]:
             if os.path.exists(f): os.remove(f)
