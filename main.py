@@ -10,8 +10,6 @@ import config
 import ui
 import media_tools as media
 
-
-# Proper Python logging avoids printing directly to stdout incorrectly
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -22,7 +20,7 @@ async def run_encode():
         await app.start()
         status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Failed to start bot or send initial message: {e}")
+        logger.error(f"Failed to start bot: {e}")
         return
 
     try:
@@ -30,11 +28,12 @@ async def run_encode():
     except Exception as e:
         logger.error(f"Metadata error: {e}")
         await app.edit_message_text(config.CHAT_ID, status.id, "❌ <b>Metadata Extraction Failed!</b>", parse_mode=enums.ParseMode.HTML)
+        await app.stop()
         return
 
     def_crf, def_preset = media.select_params(height)
-    final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
-    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
+    final_crf = config.USER_CRF if config.USER_CRF else def_crf
+    final_preset = config.USER_PRESET if config.USER_PRESET else def_preset
     
     res_label = config.USER_RES if config.USER_RES else f"{height}p"
     hdr_label = "HDR10" if is_hdr else "SDR"
@@ -131,7 +130,7 @@ async def run_encode():
 
     await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
     
-    # Non-blocking async Remux
+    # Async Remuxing Step
     fixed_file = f"FIXED_{config.FILE_NAME}"
     remux_cmd = ["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE]
     remux_proc = await asyncio.create_subprocess_exec(*remux_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -141,19 +140,16 @@ async def run_encode():
         os.remove(config.FILE_NAME)
         os.rename(fixed_file, config.FILE_NAME)
 
-    # Grid Generation
     grid_task = asyncio.create_task(media.async_generate_grid(duration, config.FILE_NAME, config.SCREENSHOT))
     
-    # Connect VMAF Logic smoothly to UI
     vmaf_val, ssim_val = "N/A", "N/A"
     if config.RUN_VMAF:
         vmaf_state = {'last_update': 0}
-        
         async def handle_vmaf_progress(percent, speed, eta):
             await ui.vmaf_progress(percent, speed, eta, app, config.CHAT_ID, status, vmaf_state)
             
         vmaf_val, ssim_val = await media.get_vmaf(
-            config.FILE_NAME, crop_val, width, height, duration, fps_val, 
+            config.FILE_NAME, config.SOURCE, crop_val, width, height, duration, fps_val, 
             progress_callback=handle_vmaf_progress
         )
 
@@ -174,49 +170,46 @@ async def run_encode():
         )
         await app.send_message(config.CHAT_ID, overflow_report, disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
         await app.send_document(config.CHAT_ID, config.LOG_FILE)
-        
-        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
-            if os.path.exists(f): os.remove(f)
-        await app.stop()
-        return
+    else:
+        photo_msg = None
+        if os.path.exists(config.SCREENSHOT):
+            photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
 
-    photo_msg = None
-    if os.path.exists(config.SCREENSHOT):
-        photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
+        report = (
+            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
+            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
+            f"⏱ <b>ENCODE TIME:</b> <code>{ui.format_time(total_mission_time)}</code>\n"
+            f"📦 <b>FINAL SIZE:</b> <code>{final_size:.2f} MB</code>\n"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+            f"🛠 <b>ENCODE SPECS:</b>\n"
+            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
+            f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label} | 10-bit{grain_label}\n"
+            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
+        )
 
-    report = (
-        f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
-        f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-        f"⏱ <b>ENCODE TIME:</b> <code>{ui.format_time(total_mission_time)}</code>\n"
-        f"📦 <b>FINAL SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-        f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-        f"🛠 <b>ENCODE SPECS:</b>\n"
-        f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
-        f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label} | 10-bit{grain_label}\n"
-        f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
-    )
+        await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
 
-    await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
+        upload_state_tracker = {'last_update': 0}
+        await app.send_document(
+            chat_id=config.CHAT_ID, 
+            document=config.FILE_NAME, 
+            caption=report,
+            parse_mode=enums.ParseMode.HTML,
+            reply_to_message_id=photo_msg.id if photo_msg else None,
+            progress=ui.upload_progress,
+            progress_args=(app, config.CHAT_ID, status, config.FILE_NAME, upload_state_tracker)
+        )
 
-    upload_state_tracker = {'last_update': 0}
-    await app.send_document(
-        chat_id=config.CHAT_ID, 
-        document=config.FILE_NAME, 
-        caption=report,
-        parse_mode=enums.ParseMode.HTML,
-        reply_to_message_id=photo_msg.id if photo_msg else None,
-        progress=ui.upload_progress,
-        progress_args=(app, config.CHAT_ID, status, config.FILE_NAME, upload_state_tracker)
-    )
+        try:
+            await status.delete()
+        except Exception:
+            pass
 
-    try:
-        await status.delete()
-    except Exception:
-        pass
-
-    # Cleanup Files
-    for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
-        if os.path.exists(f): os.remove(f)
+    # Safe Cleanup
+    for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT, fixed_file]:
+        if os.path.exists(f): 
+            try: os.remove(f)
+            except: pass
 
     await app.stop()
 
