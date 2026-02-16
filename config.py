@@ -1,5 +1,3 @@
---- START OF FILE Av1Encoding-main/config.py ---
-
 import os
 
 # ---------- FILE PATHS & CONSTANTS ----------
@@ -12,7 +10,6 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = int(os.getenv("CHAT_ID", "0")) if os.getenv("CHAT_ID") else 0
-MESSAGE_ID = int(os.getenv("MESSAGE_ID", "0")) # Message to download from
 FILE_NAME = os.getenv("FILE_NAME", "output.mkv")
 
 # ---------- USER SETTINGS ----------

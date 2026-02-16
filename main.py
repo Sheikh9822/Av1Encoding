@@ -1,5 +1,3 @@
---- START OF FILE Av1Encoding-main/main.py ---
-
 import asyncio
 import os
 import subprocess
@@ -10,94 +8,60 @@ from pyrogram.errors import FloodWait
 
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
-from ui import get_encode_ui, format_time, upload_progress, download_progress
+from ui import get_encode_ui, format_time, upload_progress
 
 async def main():
+    # 1. Validate Source Metadata before starting Client
+    try:
+        duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
+    except Exception as e:
+        print(f"Metadata error: {e}")
+        return
+
+    # 2. Prepare Encoding Parameters
+    def_crf, def_preset = select_params(height)
+    final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
+    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
+    
+    try: grain_val = int(config.USER_GRAIN)
+    except: grain_val = 0
+    
+    res_label = config.USER_RES if config.USER_RES else f"{height}p"
+    hdr_label = "HDR10" if is_hdr else "SDR"
+    grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
+    
+    # 3. Detect Crop
+    crop_val = get_crop_params(duration)
+    
+    vf_filters = []
+    if crop_val: vf_filters.append(f"crop={crop_val}")
+    if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
+        
+    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
+    
+    # 4. Audio Setup
+    if channels == 0: audio_cmd = []
+    elif config.AUDIO_MODE == "opus":
+        calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
+        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
+    else: audio_cmd = ["-c:a", "copy"]
+
+    hdr_params = ":enable-hdr=1" if is_hdr else ""
+    grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
+    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
+
     # FIX: Use in_memory=True to prevent AuthKeyDuplicated errors in CI/CD/Runners
     async with Client("bot_session", api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN, in_memory=True) as app:
         
         status = None
         try:
-            # 1. Initialize Communication
             try:
                 status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM BOOT ] Initializing Satellite Link...</b>", parse_mode=enums.ParseMode.HTML)
             except FloodWait as e:
                 await asyncio.sleep(e.value + 2)
                 status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
 
-            # 2. Download Source if not exists
-            if not os.path.exists(config.SOURCE):
-                target_msg = None
-                
-                # Method A: Specific Message ID
-                if config.MESSAGE_ID:
-                    try:
-                        target_msg = await app.get_messages(config.CHAT_ID, config.MESSAGE_ID)
-                    except: pass
-                
-                # Method B: Fallback to last message in chat
-                if not target_msg:
-                    async for msg in app.get_chat_history(config.CHAT_ID, limit=1):
-                        target_msg = msg
-
-                if target_msg and (target_msg.video or target_msg.document):
-                    await app.edit_message_text(config.CHAT_ID, status.id, "📥 <b>[ SYSTEM.DOWNLINK ] Acquiring Target Asset...</b>", parse_mode=enums.ParseMode.HTML)
-                    
-                    try:
-                        await app.download_media(
-                            target_msg, 
-                            file_name=config.SOURCE,
-                            progress=download_progress,
-                            progress_args=(app, config.CHAT_ID, status)
-                        )
-                    except Exception as e:
-                        await app.edit_message_text(config.CHAT_ID, status.id, f"❌ <b>DOWNLOAD FAILED:</b> {e}", parse_mode=enums.ParseMode.HTML)
-                        return
-                else:
-                    await app.edit_message_text(config.CHAT_ID, status.id, "❌ <b>ERROR: No Source Video Found in Stream.</b>", parse_mode=enums.ParseMode.HTML)
-                    return
-
-            # 3. Analyze Metadata (Now that file exists)
-            try:
-                await app.edit_message_text(config.CHAT_ID, status.id, "🧠 <b>[ SYSTEM.ANALYSIS ] Scanning Metadata...</b>", parse_mode=enums.ParseMode.HTML)
-                duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
-            except Exception as e:
-                await app.edit_message_text(config.CHAT_ID, status.id, f"❌ <b>METADATA ERROR:</b> {e}", parse_mode=enums.ParseMode.HTML)
-                return
-
-            # 4. Prepare Encoding Parameters
-            def_crf, def_preset = select_params(height)
-            final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
-            final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
-            
-            try: grain_val = int(config.USER_GRAIN)
-            except: grain_val = 0
-            
-            res_label = config.USER_RES if config.USER_RES else f"{height}p"
-            hdr_label = "HDR10" if is_hdr else "SDR"
-            grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
-            
-            # 5. Detect Crop
-            crop_val = get_crop_params(duration)
-            
-            vf_filters = []
-            if crop_val: vf_filters.append(f"crop={crop_val}")
-            if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
-                
-            video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
-            
-            # 6. Audio Setup
-            if channels == 0: audio_cmd = []
-            elif config.AUDIO_MODE == "opus":
-                calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-                audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
-            else: audio_cmd = ["-c:a", "copy"]
-
-            hdr_params = ":enable-hdr=1" if is_hdr else ""
-            grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-            svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
-
-            # FFMPEG Command
+            # FFMPEG Command with Map Fixes
             cmd = [
                 "ffmpeg", "-i", config.SOURCE, 
                 "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?",
@@ -129,6 +93,7 @@ async def main():
                             eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                             
                             if time.time() - last_update > 8:
+                                # Check if process is still running to avoid updating after crash
                                 if process.poll() is not None: break
 
                                 size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
@@ -151,6 +116,7 @@ async def main():
             process.wait()
             total_mission_time = time.time() - start_time
 
+            # Handle FFmpeg Failure
             if process.returncode != 0:
                 await app.send_document(
                     config.CHAT_ID, 
@@ -163,6 +129,7 @@ async def main():
             await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata & Attachments...</b>", parse_mode=enums.ParseMode.HTML)
             fixed_file = f"FIXED_{config.FILE_NAME}"
             
+            # Remux with mkvmerge to clean up tags
             remux_cmd = [
                 "mkvmerge", "-o", fixed_file, 
                 config.FILE_NAME, 
@@ -177,8 +144,10 @@ async def main():
 
             final_size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
             
+            # Generate Grid
             grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
             
+            # VMAF Analysis
             if config.RUN_VMAF:
                 vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, app, config.CHAT_ID, status)
             else:
@@ -186,6 +155,7 @@ async def main():
                 
             await grid_task
             
+            # Handle File Size Overflow
             if final_size > 1990:
                 await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud Storage...</b>", parse_mode=enums.ParseMode.HTML)
                 cloud_url = await upload_to_cloud(config.FILE_NAME)
@@ -202,11 +172,13 @@ async def main():
                 await app.send_document(config.CHAT_ID, config.LOG_FILE)
                 return
             
+            # Send Grid
             photo_msg = None
             if os.path.exists(config.SCREENSHOT):
                 photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
                 os.remove(config.SCREENSHOT)
 
+            # Final Report
             report = (
                 f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
                 f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -221,6 +193,7 @@ async def main():
 
             await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video to Telegram...</b>", parse_mode=enums.ParseMode.HTML)
 
+            # Upload Video
             await app.send_document(
                 chat_id=config.CHAT_ID, 
                 document=config.FILE_NAME, 
@@ -235,8 +208,10 @@ async def main():
             except: pass
 
         except Exception as e:
+            # GLOBAL ERROR HANDLER
+            # This catches python script errors (like variable names, division by zero, logic bugs)
             error_trace = traceback.format_exc()
-            print(error_trace)
+            print(error_trace) # Print to console for runner logs
             
             if status:
                 try: await status.delete()
@@ -251,6 +226,7 @@ async def main():
             if os.path.exists(config.LOG_FILE):
                 await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📜 <b>Process Log</b>")
 
+        # Cleanup
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE]:
             if os.path.exists(f): os.remove(f)
 

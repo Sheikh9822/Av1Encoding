@@ -1,5 +1,3 @@
---- START OF FILE Av1Encoding-main/ui.py ---
-
 import time
 from datetime import timedelta
 import asyncio
@@ -7,7 +5,6 @@ from pyrogram import enums
 from pyrogram.errors import FloodWait
 
 last_up_update = 0
-last_down_update = 0
 
 def generate_progress_bar(percentage):
     total_segments = 15
@@ -49,34 +46,6 @@ def get_encode_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, perce
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
-
-async def download_progress(current, total, app, chat_id, status_msg):
-    global last_down_update
-    now = time.time()
-    
-    if now - last_down_update < 4:
-        return
-        
-    percent = (current / total) * 100
-    bar = generate_progress_bar(percent)
-    cur_mb = current / (1024 * 1024)
-    tot_mb = total / (1024 * 1024)
-    
-    ui_text = (
-        f"<code>┌─── 📥 [ SYSTEM.DOWNLINK ] ───┐\n"
-        f"│                                    \n"
-        f"│ 📡 SOURCE: Downloading...\n"
-        f"│ 📊 PROG: {bar} {percent:.1f}%\n"
-        f"│ 📦 SIZE: {cur_mb:.2f} / {tot_mb:.2f} MB\n"
-        f"│                                    \n"
-        f"└────────────────────────────────────┘</code>"
-    )
-    
-    try:
-        await app.edit_message_text(chat_id, status_msg.id, ui_text, parse_mode=enums.ParseMode.HTML)
-        last_down_update = now
-    except:
-        pass
 
 async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     global last_up_update
