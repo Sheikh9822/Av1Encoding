@@ -10,9 +10,12 @@ async def download_telegram_media():
     bot_token = os.environ.get("TG_BOT_TOKEN", "")
     url = os.environ.get("VIDEO_URL", "")
     
-    session_path = "tg_session_dir/tg_dl_session"
+    session_dir = "tg_session_dir"
+    session_path = os.path.join(session_dir, "tg_dl_session")
     
-    # Anti-Spam: Stagger new logins to avoid Telegram bans
+    # FIX: Ensure the directory exists before Pyrogram tries to create the database
+    os.makedirs(session_dir, exist_ok=True)
+    
     if not os.path.exists(f"{session_path}.session"):
         delay = random.uniform(1, 15)
         print(f"⏳ Anti-Spam: Staggering NEW login by {delay:.1f} seconds...")
@@ -20,20 +23,27 @@ async def download_telegram_media():
 
     async with Client(session_path, api_id=api_id, api_hash=api_hash, bot_token=bot_token) as app:
         
-        # CASE A: Direct File ID (Format: tg_file:FILE_ID|Optional_Name)
+        # CASE A: Direct File ID
         if url.startswith("tg_file:"):
             print("📱 Telegram Direct File ID detected.")
-            file_id = url.replace("tg_file:", "").split("|")[0]
+            # Extract ID and Name: tg_file:ID|Name
+            parts = url.replace("tg_file:", "").split("|")
+            file_id = parts[0]
+            
+            # If a name was provided in the tg_file string, save it
+            if len(parts) > 1:
+                with open("tg_fname.txt", "w") as f:
+                    f.write(parts[1])
+            
             await app.download_media(file_id, file_name="./source.mkv")
         
-        # CASE B: Telegram Message Link (Format: https://t.me/...)
+        # CASE B: Telegram Message Link
         elif "t.me/" in url:
             print("📱 Telegram Post Link detected.")
             link = url.rstrip("/")
             parts = link.split("/")
             msg_id = int(parts[-1].split("?")[0])
             
-            # Handle Private Channel IDs vs Public Usernames
             if len(parts) > 2 and parts[-3] == "c":
                 chat_id = int(f"-100{parts[-2]}")
             else:
@@ -49,7 +59,6 @@ async def download_telegram_media():
             print("⬇️ Downloading file from Telegram...")
             await app.download_media(msg, file_name="./source.mkv")
 
-            # Save the original filename so the workflow can use it
             fn = "Telegram_Video.mkv"
             if getattr(msg, "video", None) and getattr(msg.video, "file_name", None):
                 fn = msg.video.file_name
