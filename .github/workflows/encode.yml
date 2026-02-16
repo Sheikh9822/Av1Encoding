@@ -114,16 +114,8 @@ jobs:
             
             export FILE_ID
             
-            echo 'import asyncio, os, time' > tg_dl.py
+            echo 'import asyncio, os' > tg_dl.py
             echo 'from pyrogram import Client' >> tg_dl.py
-            echo 'last_update = time.time()' >> tg_dl.py
-            echo 'async def dl_progress(current, total):' >> tg_dl.py
-            echo '    global last_update' >> tg_dl.py
-            echo '    now = time.time()' >> tg_dl.py
-            echo '    if now - last_update > 5:' >> tg_dl.py
-            echo '        percent = current * 100 / total' >> tg_dl.py
-            echo '        print(f"⬇️ Downloading: {percent:.1f}% ({current / 1024 / 1024:.2f} MB / {total / 1024 / 1024:.2f} MB)", flush=True)' >> tg_dl.py
-            echo '        last_update = now' >> tg_dl.py
             echo 'async def main():' >> tg_dl.py
             echo '    session = os.environ.get("TG_USER_SESSION")' >> tg_dl.py
             echo '    if session:' >> tg_dl.py
@@ -134,7 +126,7 @@ jobs:
             echo '        print("🤖 Authenticating via Bot Token...")' >> tg_dl.py
             echo '    async with app:' >> tg_dl.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl.py
-            echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv", progress=dl_progress)' >> tg_dl.py
+            echo '        await app.download_media(os.environ["FILE_ID"], file_name="./source.mkv")' >> tg_dl.py
             echo 'asyncio.run(main())' >> tg_dl.py
             
             python3 tg_dl.py
@@ -143,16 +135,8 @@ jobs:
             echo "📱 Telegram Post Link detected. Engaging Stateless Pyrogram Session..."
             export TG_LINK="$URL"
             
-            echo 'import asyncio, os, time' > tg_dl_link.py
+            echo 'import asyncio, os' > tg_dl_link.py
             echo 'from pyrogram import Client' >> tg_dl_link.py
-            echo 'last_update = time.time()' >> tg_dl_link.py
-            echo 'async def dl_progress(current, total):' >> tg_dl_link.py
-            echo '    global last_update' >> tg_dl_link.py
-            echo '    now = time.time()' >> tg_dl_link.py
-            echo '    if now - last_update > 5:' >> tg_dl_link.py
-            echo '        percent = current * 100 / total' >> tg_dl_link.py
-            echo '        print(f"⬇️ Downloading: {percent:.1f}% ({current / 1024 / 1024:.2f} MB / {total / 1024 / 1024:.2f} MB)", flush=True)' >> tg_dl_link.py
-            echo '        last_update = now' >> tg_dl_link.py
             echo 'async def main():' >> tg_dl_link.py
             echo '    session = os.environ.get("TG_USER_SESSION")' >> tg_dl_link.py
             echo '    if session:' >> tg_dl_link.py
@@ -172,7 +156,7 @@ jobs:
             echo '            print("❌ Error: No media found OR Account lacks access to channel!")' >> tg_dl_link.py
             echo '            exit(1)' >> tg_dl_link.py
             echo '        print("⬇️ Downloading file from Telegram (up to 2GB)...")' >> tg_dl_link.py
-            echo '        await app.download_media(msg, file_name="./source.mkv", progress=dl_progress)' >> tg_dl_link.py
+            echo '        await app.download_media(msg, file_name="./source.mkv")' >> tg_dl_link.py
             echo '        fn = "Telegram_Video.mkv"' >> tg_dl_link.py
             echo '        if getattr(msg, "video", None) and getattr(msg.video, "file_name", None): fn = msg.video.file_name' >> tg_dl_link.py
             echo '        elif getattr(msg, "document", None) and getattr(msg.document, "file_name", None): fn = msg.document.file_name' >> tg_dl_link.py
