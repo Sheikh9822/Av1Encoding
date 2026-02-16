@@ -1,0 +1,66 @@
+import time
+import asyncio
+import os
+import subprocess
+from pyrogram import enums
+from pyrogram.errors import FloodWait
+from helpers import generate_progress_bar, format_time
+
+last_up_update = 0
+
+def make_status_ui(file_name, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label, hdr_label, grain_label, u_audio, u_bitrate, size):
+    return (
+        f"<code>┌─── 🛰️ [ SYSTEM.ENCODE.PROCESS ] ───┐\n"
+        f"│                                    \n"
+        f"│ 📂 FILE: {file_name}\n"
+        f"│ ⚡ SPEED: {speed:.1f}x ({int(fps)} FPS)\n"
+        f"│ ⏳ TIME: {format_time(elapsed)} / ETA: {format_time(eta)}\n"
+        f"│ 🕒 DONE: {format_time(curr_sec)} / {format_time(duration)}\n"
+        f"│                                    \n"
+        f"│ 📊 PROG: {generate_progress_bar(percent)} {percent:.1f}% \n"
+        f"│                                    \n"
+        f"│ 🛠️ SETTINGS: CRF {final_crf} | Preset {final_preset}\n"
+        f"│ 🎞️ VIDEO: {res_label}{crop_label} | 10-bit | {hdr_label}{grain_label}\n"
+        f"│ 🔊 AUDIO: {u_audio.upper()} @ {u_bitrate}\n"
+        f"│ 📦 SIZE: {size:.2f} MB\n"
+        f"│                                    \n"
+        f"└────────────────────────────────────┘</code>"
+    )
+
+async def upload_to_cloud(filepath):
+    """Uploads to transfer.sh via curl."""
+    cmd = ["curl", "-H", "Max-Days: 3", "--upload-file", filepath, f"https://transfer.sh/{os.path.basename(filepath)}"]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, _ = await proc.communicate()
+    return stdout.decode().strip()
+
+async def upload_progress(current, total, app, chat_id, status_msg, file_name):
+    global last_up_update
+    now = time.time()
+    
+    if now - last_up_update < 4:
+        return
+        
+    percent = (current / total) * 100
+    bar = generate_progress_bar(percent)
+    cur_mb = current / (1024 * 1024)
+    tot_mb = total / (1024 * 1024)
+    
+    scifi_up_ui = (
+        f"<code>┌─── 🛰️ [ SYSTEM.UPLINK.ACTIVE ] ───┐\n"
+        f"│                                    \n"
+        f"│ 📂 FILE: {file_name}\n"
+        f"│ 📊 PROG: {bar} {percent:.1f}%\n"
+        f"│ 📦 SIZE: {cur_mb:.2f} / {tot_mb:.2f} MB\n"
+        f"│ 📡 STATUS: Transmitting to Orbit... \n"
+        f"│                                    \n"
+        f"└────────────────────────────────────┘</code>"
+    )
+    
+    try:
+        await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
+        last_up_update = now
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except:
+        pass
