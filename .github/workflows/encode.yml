@@ -1,66 +1,60 @@
 name: AV1 Dual-Lane Pipeline
-run-name: "🚀 [STAGE-1]: ${{ inputs.ui_title || inputs.custom_name || 'Targeting Mission' }}"
+run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
 on:
   workflow_dispatch:
     inputs:
       ui_title:
         description: 'Dashboard Title'
-        required: false
       video_url:
-        description: 'Telegram Post Link'
+        description: 'Telegram Link'
         required: true
       custom_name:
-        description: 'Output Filename (Optional)'
-        required: false
+        description: 'Output Filename'
       res_choice:
-        description: 'Resolution (e.g. 1080, 720)'
-        required: false
+        description: 'Resolution'
       custom_crf:
-        description: 'CRF (Default 42)'
+        description: 'CRF'
         default: '42'
       custom_preset:
-        description: 'Preset (Default 6)'
+        description: 'Preset'
         default: '6'
       film_grain:
-        description: 'Grain (0-50)'
+        description: 'Grain'
         default: '0'
       audio_mode:
-        description: 'Audio: opus or copy'
+        description: 'Audio Mode'
         default: 'opus'
       audio_bitrate:
-        description: 'Audio Bitrate (e.g. 128k)'
+        description: 'Audio Bitrate'
         default: '128k'
       run_vmaf:
-        description: 'Run VMAF Quality Check? (true/false)'
+        description: 'Run VMAF?'
         default: 'true'
 
 jobs:
   # -------------------------------------------------------------------------
-  # STAGE 1: THE DOWNLOADER (Restricted to 2 global lanes)
+  # STAGE 1: DOWNLOADER (Limit: 2 Parallel Runs)
   # -------------------------------------------------------------------------
   download_phase:
     runs-on: ubuntu-latest
     concurrency:
-      # Modulo logic ensures exactly 2 downloads can run at once
       group: telegram-lane-${{ github.run_number % 2 }}
       cancel-in-progress: false
     outputs:
       final_name: ${{ steps.get_name.outputs.NAME }}
     steps:
-      - name: 🛰️ Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       - name: 🛠 Install Download Tools
         run: pip install pyrogram tgcrypto
 
-      - name: 📁 Setup Session Directory
+      - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
 
       - name: 💾 Restore Session Cache
@@ -81,53 +75,54 @@ jobs:
       - name: 🏷 Extract Filename
         id: get_name
         run: |
-          FN=$(cat tg_fname.txt)
+          if [ -f "tg_fname.txt" ]; then
+            FN=$(cat tg_fname.txt)
+          else
+            FN="video.mkv"
+          fi
           echo "NAME=$FN" >> $GITHUB_OUTPUT
 
-      - name: 📦 Upload Payload to Internal Storage
+      - name: 📦 Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Unique identifier for this specific mission
           name: payload-${{ github.run_id }}
           path: |
             source.mkv
             tg_fname.txt
           retention-days: 1
-          # Disable compression for speed (video is already compressed)
           compression-level: 0
 
   # -------------------------------------------------------------------------
-  # STAGE 2: THE ENCODER (Parallelized - No limits)
+  # STAGE 2: ENCODER (Parallel - No Limits)
   # -------------------------------------------------------------------------
   encode_phase:
     needs: download_phase
     runs-on: ubuntu-latest
     timeout-minutes: 480
     steps:
-      - name: 🛰️ Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
-      - name: 🛠 Install Encoding Tools & FFmpeg
+      - name: 🛠 Install Encoding Tools
         run: |
           sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
           pip install -r requirements.txt
-          # Download specialized FFmpeg for VMAF
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-      - name: 📥 Fetch Payload from Storage
+      - name: 📥 Download Payload
         uses: actions/download-artifact@v4
         with:
           name: payload-${{ github.run_id }}
+          # CRITICAL: Path '.' ensures source.mkv is in the root folder, not a subfolder
+          path: .
 
-      - name: 🚀 Execute Sci-Fi Encoder
+      - name: 🚀 Start Encoder
         env:
           API_ID: ${{ secrets.TG_API_ID }}
           API_HASH: ${{ secrets.TG_API_HASH }}
@@ -140,6 +135,6 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
-          # Pass the detected name to the script
+          # Pulls the name generated in the Download Phase
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
