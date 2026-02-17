@@ -1,3 +1,5 @@
+--- START OF FILE main.py ---
+
 import asyncio
 import os
 import subprocess
@@ -49,12 +51,14 @@ async def main():
     if channels == 0: audio_cmd = []
     elif config.AUDIO_MODE == "opus":
         calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "channelmap=channel_layout=5.1"]
+        # Fix: Use aformat to support both 5.1 and Stereo without crashing
+        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=5.1|stereo"]
     else: audio_cmd = ["-c:a", "copy"]
 
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
+    # Fix: Removed enable-tpl-la=1 which caused parsing errors
+    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
 
     # 3. START TELEGRAM CLIENT
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
