@@ -1,145 +1,176 @@
-import asyncio
-import os
-import subprocess
-import time
-import shutil
-from pyrogram import Client, enums
-from pyrogram.errors import FloodWait
+name: AV1 Universal Pipeline
+run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
-import config
-from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
-from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
+on:
+  workflow_dispatch:
+    inputs:
+      ui_title:
+        description: 'Dashboard Title'
+      video_url:
+        description: 'Link (TG, M3U8, or Direct CDN)'
+        required: true
+      custom_name:
+        description: 'Output Filename'
+      res_choice:
+        description: 'Resolution'
+      custom_crf:
+        description: 'CRF'
+        default: '42'
+      custom_preset:
+        description: 'Preset'
+        default: '6'
+      film_grain:
+        description: 'Grain'
+        default: '0'
+      audio_mode:
+        description: 'Audio Mode'
+        default: 'opus'
+      audio_bitrate:
+        description: 'Audio Bitrate'
+        default: '128k'
+      run_vmaf:
+        description: 'Run VMAF?'
+        default: 'true'
 
-async def main():
-    if os.path.exists(config.SOURCE):
-        total, used, free = shutil.disk_usage("/")
-        source_size = os.path.getsize(config.SOURCE)
-        if (source_size * 2.1) > free:
-            print(f"⚠️ DISK WARNING: {source_size/(1024**3):.2f}GB source might exceed {free/(1024**3):.2f}GB free space.")
+jobs:
+  # PHASE 1: SMART DOWNLOADER
+  download_phase:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: >-
+        ${{ 
+          (!contains(inputs.video_url, 't.me') && !contains(inputs.video_url, 'tg_file:')) && github.run_id || 
+          (
+            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'tg-lane-A' ||
+            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'tg-lane-B' || 
+            'tg-lane-C'
+          )
+        }}
+      cancel-in-progress: false
+    outputs:
+      final_name: ${{ steps.get_name.outputs.NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
 
-    try:
-        duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
-    except Exception as e:
-        print(f"Metadata error: {e}")
-        return
+      - name: 🛠 Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y aria2
+          pip install pyrogram tgcrypto yt-dlp
 
-    def_crf, def_preset = select_params(height)
-    final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
-    final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
-    
-    try: grain_val = int(config.USER_GRAIN)
-    except: grain_val = 0
-    
-    res_label = config.USER_RES if config.USER_RES else f"{height}p"
-    hdr_label = "HDR10" if is_hdr else "SDR"
-    grain_label = f" | Grain: {grain_val}" if grain_val > 0 else ""
-    
-    crop_val = get_crop_params(duration)
-    vf_filters = []
-    if crop_val: vf_filters.append(f"crop={crop_val}")
-    if config.USER_RES: vf_filters.append(f"scale=-2:{config.USER_RES}")
-    video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
-    
-    if channels == 0: audio_cmd = []
-    elif config.AUDIO_MODE == "opus":
-        calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=7.1|5.1|stereo"]
-    else: audio_cmd = ["-c:a", "copy"]
+      - name: 📁 Setup Session
+        run: mkdir -p tg_session_dir
 
-    hdr_params = ":enable-hdr=1" if is_hdr else ""
-    grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-master
 
-    async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
-        try:
-            status = await app.send_message(config.CHAT_ID, f"📡 <b>[ SYSTEM ONLINE ] Processing: {config.FILE_NAME}</b>", parse_mode=enums.ParseMode.HTML)
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 2)
-            status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
+      - name: 📥 Universal Download
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+          CUSTOM: ${{ github.event.inputs.custom_name }}
+        run: |
+          URL="${{ github.event.inputs.video_url }}"
+          
+          # Telegram Logic
+          if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
+            python3 tg_handler.py
+          # Magnet Safety
+          elif [[ "$URL" == magnet:* ]]; then
+            echo "❌ ERROR: Magnet links are disabled." && exit 1
+          # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
+          else
+            if [ -z "$CUSTOM" ]; then
+                # Extract filename from URL, strip query strings, and decode URL encoding
+                CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                # Ensure it has a video extension
+                if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
+                    FN="video.mkv"
+                else
+                    FN="$CLEAN_NAME"
+                fi
+            else
+                FN="${CUSTOM}.mkv"
+            fi
+            
+            echo "📥 Downloading Direct Link: $URL"
+            aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            echo "$FN" > tg_fname.txt
+          fi
 
-        cmd = [
-            "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
-            *video_filters,
-            "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
-            "-crf", str(final_crf), "-preset", str(final_preset),
-            "-svtav1-params", svtav1_tune,
-            "-threads", "0",
-            *audio_cmd, "-c:s", "copy",
-            "-progress", "pipe:1", "-nostats", "-y", config.FILE_NAME
-        ]
+      - name: 🏷 Extract Filename
+        id: get_name
+        run: echo "NAME=$(cat tg_fname.txt)" >> $GITHUB_OUTPUT
 
-        start_time, last_update = time.time(), 0
-        with open(config.LOG_FILE, "w") as f_log:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-            for line in process.stdout:
-                f_log.write(line)
-                if config.CANCELLED: break
-                if "out_time_ms" in line:
-                    try:
-                        curr_sec = int(line.split("=")[1]) / 1_000_000
-                        percent = (curr_sec / duration) * 100
-                        elapsed = time.time() - start_time
-                        speed = curr_sec / elapsed if elapsed > 0 else 0
-                        fps = (percent / 100 * total_frames) / elapsed if elapsed > 0 else 0
-                        eta = (elapsed / percent) * (100 - percent) if percent > 0 else 0
-                        
-                        if time.time() - last_update > 8:
-                            size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
-                            crop_label_txt = f" | Cropped" if crop_val else ""
-                            scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, grain_label, config.AUDIO_MODE, config.AUDIO_BITRATE, size)
-                            try:
-                                await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
-                                last_update = time.time()
-                            except: continue
-                    except: continue
+      - name: 📦 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload-${{ github.run_id }}
+          path: |
+            source.mkv
+            tg_fname.txt
+          retention-days: 1
+          compression-level: 0
 
-        process.wait()
-        total_mission_time = time.time() - start_time
+  # PHASE 2: PARALLEL ENCODER
+  encode_phase:
+    needs: download_phase
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
 
-        if process.returncode != 0:
-            error_snippet = "".join(open(config.LOG_FILE).readlines()[-10:]) if os.path.exists(config.LOG_FILE) else "Unknown Engine Crash."
-            await app.edit_message_text(config.CHAT_ID, status.id, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
-            await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
-            return
+      - name: 🛠 Install Encoding Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y mkvtoolnix curl
+          pip install -r requirements.txt
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo cp ffmpeg-master-latest-linux64-gpl/bin/ff* /usr/local/bin/
 
-        await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
-        fixed_file = f"FIXED_{config.FILE_NAME}"
-        subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE])
-        if os.path.exists(fixed_file):
-            os.remove(config.FILE_NAME)
-            os.rename(fixed_file, config.FILE_NAME)
+      - name: 📥 Fetch Payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload-${{ github.run_id }}
 
-        final_size = os.path.getsize(config.FILE_NAME)/(1024*1024)
-        grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
-        vmaf_val, ssim_val = await get_vmaf(config.FILE_NAME, crop_val, width, height, duration, fps_val, app, config.CHAT_ID, status) if config.RUN_VMAF else ("N/A", "N/A")
-        await grid_task
-        
-        if final_size > 2000:
-            cloud_url = await upload_to_cloud(config.FILE_NAME)
-            await app.send_message(config.CHAT_ID, f"☁️ <b>EXTERNAL LINK:</b>\n{cloud_url}", parse_mode=enums.ParseMode.HTML)
-            return
-        
-        photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML) if os.path.exists(config.SCREENSHOT) else None
-        
-        crop_label_report = f" | Cropped" if crop_val else ""
-        report = (
-            f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
-            f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-            f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
-            f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-            f"🛠 <b>SPECS:</b>\n"
-            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
-            f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
-        )
+      - name: 💾 Restore Session Cache
+        uses: actions/cache@v4
+        with:
+          path: tg_session_dir
+          key: tg-session-master
 
-        await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
-        await app.send_document(chat_id=config.CHAT_ID, document=config.FILE_NAME, caption=report, parse_mode=enums.ParseMode.HTML, reply_to_message_id=photo_msg.id if photo_msg else None, progress=upload_progress, progress_args=(app, config.CHAT_ID, status, config.FILE_NAME))
-        try: await status.delete()
-        except: pass
-        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
-            if os.path.exists(f): os.remove(f)
+      - name: 🔑 Authorize Bot Session
+        run: |
+          if [ -f "tg_session_dir/tg_dl_session.session" ]; then
+            cp tg_session_dir/tg_dl_session.session ./enc_session.session
+            echo "✅ Session copied successfully."
+          fi
 
-if __name__ == "__main__":
-    asyncio.run(main())
+      - name: 🚀 Start Parallel Encoder
+        env:
+          API_ID: ${{ secrets.TG_API_ID }}
+          API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SESSION_NAME: "enc_session"
+          USER_RES: ${{ github.event.inputs.res_choice }}
+          USER_CRF: ${{ github.event.inputs.custom_crf }}
+          USER_PRESET: ${{ github.event.inputs.custom_preset }}
+          USER_GRAIN: ${{ github.event.inputs.film_grain }}
+          AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
+          AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
+          RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
+        run: python3 main.py
