@@ -1,5 +1,3 @@
---- START OF FILE main.py ---
-
 import asyncio
 import os
 import subprocess
@@ -13,12 +11,9 @@ from media import get_video_info, get_crop_params, select_params, async_generate
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 
 async def main():
-    # 1. PRE-FLIGHT DISK CHECK (UX Improvement)
-    # GitHub Runners have ~14GB free. We check if source + expected output fits.
     if os.path.exists(config.SOURCE):
         total, used, free = shutil.disk_usage("/")
         source_size = os.path.getsize(config.SOURCE)
-        # Prediction: Source + Encode (est 0.5x source) + VMAF overhead (est 0.5x source)
         if (source_size * 2.1) > free:
             print(f"⚠️ DISK WARNING: {source_size/(1024**3):.2f}GB source might exceed {free/(1024**3):.2f}GB free space.")
 
@@ -28,7 +23,6 @@ async def main():
         print(f"Metadata error: {e}")
         return
 
-    # 2. PARAMETER CONFIGURATION
     def_crf, def_preset = select_params(height)
     final_crf = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
@@ -48,19 +42,18 @@ async def main():
         
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
     
+    # AUDIO FIX: Use aformat to handle layout mismatches (5.1 side vs stereo)
     if channels == 0: audio_cmd = []
     elif config.AUDIO_MODE == "opus":
         calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-        # Fix: Use aformat to support both 5.1 and Stereo without crashing
-        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=5.1|stereo"]
+        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=7.1|5.1|stereo"]
     else: audio_cmd = ["-c:a", "copy"]
 
+    # VIDEO FIX: Removed enable-tpl-la=1 which causes parsing errors in new FFmpeg builds
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-    # Fix: Removed enable-tpl-la=1 which caused parsing errors
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
 
-    # 3. START TELEGRAM CLIENT
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
         try:
             status = await app.send_message(config.CHAT_ID, f"📡 <b>[ SYSTEM ONLINE ] Processing: {config.FILE_NAME}</b>", parse_mode=enums.ParseMode.HTML)
@@ -68,7 +61,6 @@ async def main():
             await asyncio.sleep(e.value + 2)
             status = await app.send_message(config.CHAT_ID, "📡 <b>[ SYSTEM RECOVERY ] Link Re-established...</b>", parse_mode=enums.ParseMode.HTML)
 
-        # 4. ENCODING EXECUTION
         cmd = [
             "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *video_filters,
@@ -114,39 +106,29 @@ async def main():
         process.wait()
         total_mission_time = time.time() - start_time
 
-        # 5. ERROR HANDLING & FAILURE REPORT
         if process.returncode != 0:
-            # Extract last 10 lines of the log to find the exact reason
             if os.path.exists(config.LOG_FILE):
                 with open(config.LOG_FILE, "r") as f:
                     lines = f.readlines()
                     error_snippet = "".join(lines[-10:])
             else:
-                error_snippet = "Unknown Engine Crash - Log not found."
+                error_snippet = "Unknown Engine Crash."
             
             fail_ui = get_failure_ui(config.FILE_NAME, error_snippet)
             await app.edit_message_text(config.CHAT_ID, status.id, fail_ui, parse_mode=enums.ParseMode.HTML)
             await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL MISSION LOG</b>")
             return
 
-        # 6. POST-PROCESSING (Remuxing)
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
         
-        remux_cmd = [
-            "mkvmerge", "-o", fixed_file, 
-            config.FILE_NAME, 
-            "--no-video", "--no-audio", "--no-subtitles", config.SOURCE
-        ]
-        
+        remux_cmd = ["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", config.SOURCE]
         remux_proc = subprocess.run(remux_cmd, capture_output=True, text=True)
         if remux_proc.returncode == 0 and os.path.exists(fixed_file):
             os.remove(config.FILE_NAME)
             os.rename(fixed_file, config.FILE_NAME)
 
         final_size = os.path.getsize(config.FILE_NAME)/(1024*1024)
-        
-        # 7. SCREENSHOTS & METRICS
         grid_task = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
         
         if config.RUN_VMAF:
@@ -156,22 +138,12 @@ async def main():
             
         await grid_task
         
-        # 8. SIZE OVERFLOW HANDLING
-        if final_size > 2000: # 2GB Telegram Limit
+        if final_size > 2000:
             await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud...</b>", parse_mode=enums.ParseMode.HTML)
             cloud_url = await upload_to_cloud(config.FILE_NAME)
-            
-            report = (
-                f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL (OVERFLOW)</b>\n\n"
-                f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
-                f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-                f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-                f"☁️ <b>EXTERNAL LINK:</b>\n{cloud_url}"
-            )
-            await app.send_message(config.CHAT_ID, report, parse_mode=enums.ParseMode.HTML)
+            await app.send_message(config.CHAT_ID, f"☁️ <b>EXTERNAL LINK:</b>\n{cloud_url}", parse_mode=enums.ParseMode.HTML)
             return
         
-        # 9. FINAL UPLINK
         photo_msg = None
         if os.path.exists(config.SCREENSHOT):
             photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
@@ -182,15 +154,10 @@ async def main():
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
             f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
             f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-            f"🛠 <b>SPECS:</b>\n"
-            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
-            f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label}{grain_label}\n"
-            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>"
         )
 
         await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
-
         await app.send_document(
             chat_id=config.CHAT_ID, 
             document=config.FILE_NAME, 
@@ -203,8 +170,6 @@ async def main():
         
         try: await status.delete()
         except: pass
-
-        # CLEANUP
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE]:
             if os.path.exists(f): os.remove(f)
 
