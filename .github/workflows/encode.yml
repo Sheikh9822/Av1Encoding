@@ -15,7 +15,7 @@ on:
         description: 'Resolution'
       custom_crf:
         description: 'CRF'
-        default: '42'
+        default: '46'
       custom_preset:
         description: 'Preset'
         default: '6'
@@ -23,22 +23,18 @@ on:
         description: 'Grain'
         default: '0'
       audio_mode:
-        description: 'Audio Mode'
+        description: 'opus'
         default: 'opus'
       audio_bitrate:
-        description: 'Audio Bitrate'
+        description: '128k'
         default: '128k'
       run_vmaf:
-        description: 'Run VMAF?'
+        description: 'true'
         default: 'true'
 
 jobs:
-  # PHASE 1: SMART DOWNLOADER
   download_phase:
     runs-on: ubuntu-latest
-    # SMART CONCURRENCY:
-    # 1. Non-TG Links: Start Instantly (unique group)
-    # 2. TG Links: Sorted into 3 lanes (A, B, C) to avoid FloodWait
     concurrency:
       group: >-
         ${{ 
@@ -67,7 +63,6 @@ jobs:
       - name: 📁 Setup Session
         run: mkdir -p tg_session_dir
 
-      # Important: Restore the master session so the bot is logged in
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
@@ -85,21 +80,22 @@ jobs:
         run: |
           URL="${{ github.event.inputs.video_url }}"
           
-          # Telegram Logic
           if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
             python3 tg_handler.py
-          # Magnet Safety
           elif [[ "$URL" == magnet:* ]]; then
             echo "❌ ERROR: Magnet links are disabled." && exit 1
-          # Direct/YT-DLP Logic
           else
+            # DIRECT DOWNLOAD LOGIC (Fixes the Timeout Issue)
             if [ -z "$CUSTOM" ]; then
-                TITLE=$(yt-dlp --print filename -o "%(title)s" "$URL" | head -n 1)
-                FN="${TITLE}.mkv"
+                # Extract filename from URL, strip query params, and decode URL encoding
+                FN=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                if [[ "$FN" != *.mkv ]] && [[ "$FN" != *.mp4 ]]; then FN="video.mkv"; fi
             else
                 FN="${CUSTOM}.mkv"
             fi
-            yt-dlp --downloader aria2c --downloader-args "aria2c:-x 16 -s 16" --merge-output-format mkv -o "source.mkv" "$URL"
+            
+            echo "📥 Downloading Direct Link: $URL"
+            aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" -o "source.mkv" "$URL"
             echo "$FN" > tg_fname.txt
           fi
 
@@ -117,7 +113,6 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  # PHASE 2: PARALLEL ENCODER
   encode_phase:
     needs: download_phase
     runs-on: ubuntu-latest
@@ -141,23 +136,16 @@ jobs:
         with:
           name: payload-${{ github.run_id }}
 
-      # RESTORE SESSION FOR ENCODER (Crucial for FloodWait Fix)
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
           key: tg-session-master
 
-      # PRE-AUTHORIZATION STEP
       - name: 🔑 Authorize Bot Session
         run: |
-          # Copy the master session to 'enc_session.session'
-          # main.py will use this file to skip the Login process
           if [ -f "tg_session_dir/tg_dl_session.session" ]; then
             cp tg_session_dir/tg_dl_session.session ./enc_session.session
-            echo "✅ Session copied successfully."
-          else
-            echo "⚠️ Master session not found in cache. First run might be slower."
           fi
 
       - name: 🚀 Start Parallel Encoder
@@ -166,7 +154,6 @@ jobs:
           API_HASH: ${{ secrets.TG_API_HASH }}
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # This tells main.py to use the file we just copied
           SESSION_NAME: "enc_session"
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
