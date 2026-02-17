@@ -11,10 +11,12 @@ from media import get_video_info, get_crop_params, select_params, async_generate
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 
 async def main():
-    # 1. PRE-FLIGHT DISK CHECK
+    # 1. PRE-FLIGHT DISK CHECK (UX Improvement)
+    # GitHub Runners have ~14GB free. We check if source + expected output fits.
     if os.path.exists(config.SOURCE):
         total, used, free = shutil.disk_usage("/")
         source_size = os.path.getsize(config.SOURCE)
+        # Prediction: Source + Encode (est 0.5x source) + VMAF overhead (est 0.5x source)
         if (source_size * 2.1) > free:
             print(f"⚠️ DISK WARNING: {source_size/(1024**3):.2f}GB source might exceed {free/(1024**3):.2f}GB free space.")
 
@@ -44,23 +46,15 @@ async def main():
         
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
     
-    # --- FIX 1: AUDIO MAPPING FOR 5.1 OPUS ---
-    if channels == 0: 
-        audio_cmd = []
+    if channels == 0: audio_cmd = []
     elif config.AUDIO_MODE == "opus":
         calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
-        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate]
-        # Mapping family 1 is required for 5.1/7.1 Surround in Opus
-        if channels > 2:
-            audio_cmd.extend(["-mapping_family", "1"])
-    else: 
-        audio_cmd = ["-c:a", "copy"]
+        audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "channelmap=channel_layout=5.1"]
+    else: audio_cmd = ["-c:a", "copy"]
 
-    # --- FIX 2: CLEAN SVT-AV1 PARAMS (Removed enable-tpl-la) ---
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
-    # Removed enable-tpl-la=1 as it causes parsing errors in SVT-AV1 v2.0+ 
-    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
+    svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:enable-tpl-la=1:tile-columns=1{hdr_params}{grain_params}"
 
     # 3. START TELEGRAM CLIENT
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
@@ -72,15 +66,13 @@ async def main():
 
         # 4. ENCODING EXECUTION
         cmd = [
-            "ffmpeg", "-i", config.SOURCE, 
-            "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
+            "ffmpeg", "-i", config.SOURCE, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             *video_filters,
             "-c:v", "libsvtav1", "-pix_fmt", "yuv420p10le",
             "-crf", str(final_crf), "-preset", str(final_preset),
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
-            *audio_cmd, 
-            "-c:s", "copy",
+            *audio_cmd, "-c:s", "copy",
             "-progress", "pipe:1", "-nostats", "-y", config.FILE_NAME
         ]
 
@@ -118,14 +110,15 @@ async def main():
         process.wait()
         total_mission_time = time.time() - start_time
 
-        # 5. ERROR HANDLING
+        # 5. ERROR HANDLING & FAILURE REPORT
         if process.returncode != 0:
+            # Extract last 10 lines of the log to find the exact reason
             if os.path.exists(config.LOG_FILE):
                 with open(config.LOG_FILE, "r") as f:
                     lines = f.readlines()
-                    error_snippet = "".join(lines[-15:])
+                    error_snippet = "".join(lines[-10:])
             else:
-                error_snippet = "Unknown Engine Crash."
+                error_snippet = "Unknown Engine Crash - Log not found."
             
             fail_ui = get_failure_ui(config.FILE_NAME, error_snippet)
             await app.edit_message_text(config.CHAT_ID, status.id, fail_ui, parse_mode=enums.ParseMode.HTML)
@@ -160,15 +153,16 @@ async def main():
         await grid_task
         
         # 8. SIZE OVERFLOW HANDLING
-        if final_size > 2000:
-            await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting...</b>", parse_mode=enums.ParseMode.HTML)
+        if final_size > 2000: # 2GB Telegram Limit
+            await app.edit_message_text(config.CHAT_ID, status.id, "⚠️ <b>[ SYSTEM.WARNING ] SIZE OVERFLOW. Rerouting to Cloud...</b>", parse_mode=enums.ParseMode.HTML)
             cloud_url = await upload_to_cloud(config.FILE_NAME)
+            
             report = (
-                f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL</b>\n\n"
+                f"⚠️ <b>MISSION PARTIALLY SUCCESSFUL (OVERFLOW)</b>\n\n"
                 f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
                 f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
                 f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
-                f"☁️ <b>LINK:</b> {cloud_url}"
+                f"☁️ <b>EXTERNAL LINK:</b>\n{cloud_url}"
             )
             await app.send_message(config.CHAT_ID, report, parse_mode=enums.ParseMode.HTML)
             return
@@ -187,7 +181,7 @@ async def main():
             f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
             f"🛠 <b>SPECS:</b>\n"
             f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
-            f"└ <b>Video:</b> {res_label}{crop_label} | 10-bit | {hdr_label}{grain_label}\n"
+            f"└ <b>Video:</b> {res_label}{crop_label} | {hdr_label}{grain_label}\n"
             f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
         )
 
@@ -206,6 +200,7 @@ async def main():
         try: await status.delete()
         except: pass
 
+        # CLEANUP
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE]:
             if os.path.exists(f): os.remove(f)
 
