@@ -26,6 +26,18 @@ def get_vmaf_ui(percent, speed, eta):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
+def get_failure_ui(file_name, error_snippet):
+    return (
+        f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
+        f"│                                    \n"
+        f"│ 📂 FILE: {file_name}\n"
+        f"│ ❌ ERROR DETECTED:\n"
+        f"│ {error_snippet[:200]}\n"
+        f"│                                    \n"
+        f"│ 🛠️ STATUS: Core dumped. \n"
+        f"│ 📑 Check the attached log for details.\n"
+        f"└────────────────────────────────────┘</code>"
+    )
 
 def get_download_ui(percent, speed, size_mb):
     bar = generate_progress_bar(percent)
