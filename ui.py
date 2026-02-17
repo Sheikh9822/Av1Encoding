@@ -26,6 +26,15 @@ def get_vmaf_ui(percent, speed, eta):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
+def get_download_fail_ui(error_msg):
+    return (
+        f"<code>┌─── ❌ [ DOWNLOAD.MISSION.FAILED ] ───┐\n"
+        f"│                                    \n"
+        f"│ ❌ ERROR: {error_msg}\n"
+        f"│ 🛠️ STATUS: Downlink Terminated.    \n"
+        f"│                                    \n"
+        f"└────────────────────────────────────┘</code>"
+    )
 def get_failure_ui(file_name, error_snippet):
     return (
         f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
