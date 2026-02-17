@@ -42,14 +42,14 @@ async def main():
         
     video_filters = ["-vf", ",".join(vf_filters)] if vf_filters else []
     
-    # AUDIO FIX: Use aformat to handle layout mismatches (5.1 side vs stereo)
+    # AUDIO FIX: Support multiple layouts for Opus compatibility
     if channels == 0: audio_cmd = []
     elif config.AUDIO_MODE == "opus":
         calc_bitrate = config.AUDIO_BITRATE if channels <= 2 else "256k"
         audio_cmd = ["-c:a", "libopus", "-b:a", calc_bitrate, "-af", "aformat=channel_layouts=7.1|5.1|stereo"]
     else: audio_cmd = ["-c:a", "copy"]
 
-    # VIDEO FIX: Removed enable-tpl-la=1 which causes parsing errors in new FFmpeg builds
+    # VIDEO FIX: Modern parameter string
     hdr_params = ":enable-hdr=1" if is_hdr else ""
     grain_params = f":film-grain={grain_val}:film-grain-denoise=0" if grain_val > 0 else ""
     svtav1_tune = f"tune=0:aq-mode=2:enable-overlays=1:scd=1:tile-columns=1{hdr_params}{grain_params}"
@@ -90,11 +90,11 @@ async def main():
                         
                         if time.time() - last_update > 8:
                             size = os.path.getsize(config.FILE_NAME)/(1024*1024) if os.path.exists(config.FILE_NAME) else 0
-                            crop_label = f" | Cropped" if crop_val else ""
+                            crop_label_text = f" | Cropped" if crop_val else ""
                             
                             scifi_ui = get_encode_ui(
                                 config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, 
-                                final_crf, final_preset, res_label, crop_label, hdr_label, grain_label, 
+                                final_crf, final_preset, res_label, crop_label_text, hdr_label, grain_label, 
                                 config.AUDIO_MODE, config.AUDIO_BITRATE, size
                             )
                             try:
@@ -149,12 +149,18 @@ async def main():
             photo_msg = await app.send_photo(config.CHAT_ID, config.SCREENSHOT, caption=f"🖼 <b>PROXIMITY GRID:</b> <code>{config.FILE_NAME}</code>", parse_mode=enums.ParseMode.HTML)
             os.remove(config.SCREENSHOT)
 
+        # REVERTED UI: Added SPECS block back
+        crop_label_report = f" | Cropped" if crop_val else ""
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
             f"⏱ <b>TIME:</b> <code>{format_time(total_mission_time)}</code>\n"
             f"📦 <b>SIZE:</b> <code>{final_size:.2f} MB</code>\n"
-            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>"
+            f"📊 <b>QUALITY:</b> VMAF: <code>{vmaf_val}</code> | SSIM: <code>{ssim_val}</code>\n\n"
+            f"🛠 <b>SPECS:</b>\n"
+            f"└ <b>Preset:</b> {final_preset} | <b>CRF:</b> {final_crf}\n"
+            f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
+            f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {config.AUDIO_BITRATE}"
         )
 
         await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
