@@ -48,7 +48,7 @@ def get_failure_ui(file_name, error_snippet):
         f"└────────────────────────────────────┘</code>"
     )
 
-def get_download_ui(percent, speed, size_mb):
+def get_download_ui(percent, speed, size_mb, elapsed, eta):
     bar = generate_progress_bar(percent)
     return (
         f"<code>┌─── 🛰️ [ SYSTEM.DOWNLOAD.ACTIVE ] ───┐\n"
@@ -57,6 +57,7 @@ def get_download_ui(percent, speed, size_mb):
         f"│ 📊 PROG: {bar} {percent:.1f}%\n"
         f"│ ⚡ SPEED: {speed:.2f} MB/s\n"
         f"│ 📦 SIZE: {size_mb:.2f} MB\n"
+        f"│ ⏳ TIME: {format_time(elapsed)} / {format_time(eta)}\n"
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
