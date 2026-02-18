@@ -86,6 +86,12 @@ jobs:
               ;;
             audio)
               SPECIFIER="a:$AUDIO_IDX"
+              # Normalize audio title to reflect stereo downmix
+              TITLE=$(echo "$TITLE" | sed \
+                -e 's/5\.1[^a-zA-Z]*/Stereo/Ig' \
+                -e 's/7\.1[^a-zA-Z]*/Stereo/Ig' \
+                -e 's/[0-9]\.[0-9]ch/Stereo/Ig' \
+                -e 's/: Stereo: Stereo/: Stereo/Ig')
               AUDIO_IDX=$((AUDIO_IDX + 1))
               ;;
             subtitle)
