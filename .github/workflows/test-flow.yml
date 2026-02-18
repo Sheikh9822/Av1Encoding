@@ -149,9 +149,6 @@ jobs:
         echo "============================================================"
         du -sh input.mkv reference.mkv output.mkv
         echo ""
-        echo "Breakdown by stream (mkvinfo):"
-        mkvinfo output.mkv 2>/dev/null | grep -E "Track|Codec|size|Size" || true
-        echo ""
         ls -lh *.mkv
         echo "============================================================"
         mediainfo output.mkv
@@ -161,16 +158,16 @@ jobs:
         mkdir -p screenshots
 
         DURATION=$(ffprobe -v quiet -show_entries format=duration \
-          -of csv=p=0 output.mkv | cut -d'.' -f1)
+          -of csv=p=0 output.mkv)
         echo "Clip duration: ${DURATION}s"
 
         python3 -c "
         import random
-        duration = int('$DURATION')
-        margin = 2
-        timestamps = sorted(random.sample(range(margin, duration - margin), min(10, duration - margin * 2)))
+        duration = float('$DURATION')
+        margin = 2.0
+        timestamps = sorted(random.uniform(margin, duration - margin) for _ in range(10))
         for t in timestamps:
-            print(t)
+            print(f'{t:.3f}')
         " > timestamps.txt
 
         cat timestamps.txt
