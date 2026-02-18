@@ -69,13 +69,12 @@ jobs:
         fi
 
         # Build metadata flags as array to safely handle spaces in titles
-        # Also read channels so we can fix the title for downmixed audio
         METADATA_FLAGS=()
         AUDIO_IDX=0
         SUB_IDX=0
         VIDEO_DONE=0
 
-        while IFS='|' read -r TYPE CHANNELS LANG TITLE; do
+        while IFS='|' read -r TYPE LANG TITLE; do
           case "$TYPE" in
             video)
               if [ "$VIDEO_DONE" = "0" ]; then
@@ -87,10 +86,6 @@ jobs:
               ;;
             audio)
               SPECIFIER="a:$AUDIO_IDX"
-              if [ -n "$TITLE" ] && [ "$CHANNELS" -gt 2 ] 2>/dev/null; then
-                TITLE=$(echo "$TITLE" | sed 's/5\.1ch/Stereo/g; s/7\.1ch/Stereo/g; s/5\.1/Stereo/g; s/7\.1/Stereo/g')
-                TITLE="${TITLE} (Downmix)"
-              fi
               AUDIO_IDX=$((AUDIO_IDX + 1))
               ;;
             subtitle)
@@ -102,9 +97,9 @@ jobs:
           [ -n "$LANG" ]  && METADATA_FLAGS+=(-metadata:s:$SPECIFIER "language=$LANG")
           [ -n "$TITLE" ] && METADATA_FLAGS+=(-metadata:s:$SPECIFIER "title=$TITLE")
         done < <(ffprobe -v quiet \
-          -show_entries stream=codec_type,channels:stream_tags=language,title \
+          -show_entries stream=codec_type:stream_tags=language,title \
           -of csv=p=0 input.mkv 2>/dev/null | \
-          awk -F',' '{print $1"|"$2"|"$3"|"$4}')
+          awk -F',' '{print $1"|"$2"|"$3}')
 
         echo "Metadata flags: ${METADATA_FLAGS[@]}"
 
@@ -127,7 +122,7 @@ jobs:
         -preset 6 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
-        -af "aformat=channel_layouts=stereo" \
+        -af "aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE" \
         -c:a libopus -b:a 96k -ac 2 \
         -c:s copy \
         output.mkv &
@@ -143,30 +138,24 @@ jobs:
 
     - name: Show Output Info
       run: |
-        echo "============================================================"
-        echo "FILE SIZES"
-        echo "============================================================"
-        du -sh input.mkv reference.mkv output.mkv
-        echo ""
-        ls -lh *.mkv
-        echo "============================================================"
         mediainfo output.mkv
+        ls -lh
 
     - name: Screenshot Comparison (10 random frames)
       run: |
         mkdir -p screenshots
 
         DURATION=$(ffprobe -v quiet -show_entries format=duration \
-          -of csv=p=0 output.mkv)
+          -of csv=p=0 output.mkv | cut -d'.' -f1)
         echo "Clip duration: ${DURATION}s"
 
         python3 -c "
         import random
-        duration = float('$DURATION')
-        margin = 2.0
-        timestamps = sorted(random.uniform(margin, duration - margin) for _ in range(10))
+        duration = int('$DURATION')
+        margin = 2
+        timestamps = sorted(random.sample(range(margin, duration - margin), min(10, duration - margin * 2)))
         for t in timestamps:
-            print(f'{t:.3f}')
+            print(t)
         " > timestamps.txt
 
         cat timestamps.txt
