@@ -58,9 +58,11 @@ jobs:
         echo "Start: $START"
         echo "Duration: $DURATION"
 
-        CUT=""
+        CUT_IN=""
+        CUT_OUT=""
         if [ "$DURATION" != "0" ]; then
-          CUT="-ss $START -t $DURATION"
+          CUT_IN="-ss $START"
+          CUT_OUT="-t $DURATION"
           echo "Encoding SAMPLE CLIP"
         else
           echo "Encoding FULL VIDEO"
@@ -103,12 +105,13 @@ jobs:
 
         # Start reference extraction in background
         echo "Starting reference extraction in background..."
-        ffmpeg -nostdin $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv &
+        ffmpeg -nostdin $CUT_IN -i input.mkv $CUT_OUT \
+          -map 0:v:0 -c:v copy reference.mkv &
         REF_PID=$!
 
         # Start encode in background
         echo "Starting AV1 encode in background..."
-        ffmpeg -nostdin $CUT -i input.mkv \
+        ffmpeg -nostdin $CUT_IN -i input.mkv $CUT_OUT \
         -map 0:v:0 -map 0:a? -map 0:s? \
         -map_metadata 0 \
         -map_metadata:s -1 \
@@ -119,8 +122,8 @@ jobs:
         -preset 6 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
-        -af "aformat=channel_layouts='5.1|stereo|mono'" \
-        -c:a libopus -b:a 64k \
+        -af "aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE" \
+        -c:a libopus -b:a 96k -ac 2 \
         -c:s copy \
         output.mkv &
         ENCODE_PID=$!
@@ -161,12 +164,12 @@ jobs:
         while read -r T; do
           echo "Frame $i at ${T}s..."
 
-          ffmpeg -nostdin -ss $T -i reference.mkv \
-            -vf "scale=960:-1" -frames:v 1 -q:v 2 \
+          ffmpeg -nostdin -i reference.mkv \
+            -ss $T -vf "scale=960:-1" -frames:v 1 -q:v 2 \
             "screenshots/src_${i}.png" -y 2>/dev/null
 
-          ffmpeg -nostdin -ss $T -i output.mkv \
-            -vf "scale=960:-1" -frames:v 1 -q:v 2 \
+          ffmpeg -nostdin -i output.mkv \
+            -ss $T -vf "scale=960:-1" -frames:v 1 -q:v 2 \
             "screenshots/enc_${i}.png" -y 2>/dev/null
 
           convert \
