@@ -159,15 +159,25 @@ jobs:
         import random
         duration_ms = $DURATION_MS
         margin_ms = 2000
-        timestamps_ms = sorted(random.sample(range(margin_ms, duration_ms - margin_ms), min(10, duration_ms - margin_ms * 2)))
+        available = duration_ms - margin_ms * 2
+        if available < 1:
+            # Clip too short for margins, sample across full duration
+            count = min(10, duration_ms)
+            timestamps_ms = sorted(random.sample(range(0, duration_ms), count))
+        else:
+            count = min(10, available)
+            timestamps_ms = sorted(random.sample(range(margin_ms, duration_ms - margin_ms), count))
+        print(f'Sampling {count} frames', flush=True)
         for t in timestamps_ms:
             h = t // 3600000
             m = (t % 3600000) // 60000
             s = (t % 60000) // 1000
             ms = t % 1000
             print(f'{h:02d}:{m:02d}:{s:02d}.{ms:03d}')
-        " > timestamps.txt
+        " > timestamps_raw.txt
 
+        head -1 timestamps_raw.txt
+        tail -n +2 timestamps_raw.txt > timestamps.txt
         cat timestamps.txt
 
         i=1
