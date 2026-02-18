@@ -87,7 +87,6 @@ jobs:
               ;;
             audio)
               SPECIFIER="a:$AUDIO_IDX"
-              # If source is multichannel, rename title to reflect stereo downmix
               if [ -n "$TITLE" ] && [ "$CHANNELS" -gt 2 ] 2>/dev/null; then
                 TITLE=$(echo "$TITLE" | sed 's/5\.1ch/Stereo/g; s/7\.1ch/Stereo/g; s/5\.1/Stereo/g; s/7\.1/Stereo/g')
                 TITLE="${TITLE} (Downmix)"
@@ -128,7 +127,7 @@ jobs:
         -preset 6 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
-        -af "aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE" \
+        -af "aformat=channel_layouts=stereo" \
         -c:a libopus -b:a 96k -ac 2 \
         -c:s copy \
         output.mkv &
