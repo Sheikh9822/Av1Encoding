@@ -86,6 +86,9 @@ jobs:
               ;;
             audio)
               SPECIFIER="a:$AUDIO_IDX"
+              # Fix title: replace any channel description with Stereo
+              # since we are downmixing all audio to stereo
+              TITLE=$(echo "$TITLE" | sed 's/5\.1ch/Stereo/g; s/5\.1/Stereo/g; s/7\.1/Stereo/g')
               AUDIO_IDX=$((AUDIO_IDX + 1))
               ;;
             subtitle)
@@ -139,7 +142,49 @@ jobs:
     - name: Show Output Info
       run: |
         mediainfo output.mkv
-        ls -lh
+
+        echo ""
+        echo "============================================================"
+        echo "STREAM SIZE SUMMARY"
+        echo "============================================================"
+        python3 -c "
+        import subprocess, json
+
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet',
+            '-show_entries', 'stream=index,codec_type,codec_name:stream_tags=language,title:stream=bit_rate',
+            '-show_entries', 'format=size,duration',
+            '-of', 'json', 'output.mkv'
+        ], capture_output=True, text=True)
+
+        data = json.loads(result.stdout)
+        duration = float(data['format']['duration'])
+        total_size = int(data['format']['size'])
+
+        print(f'Total file size : {total_size / 1024 / 1024:.2f} MiB')
+        print(f'Duration        : {duration:.2f}s')
+        print()
+
+        for s in data['streams']:
+            idx      = s.get('index', '?')
+            stype    = s.get('codec_type', '?')
+            codec    = s.get('codec_name', '?')
+            br       = s.get('bit_rate')
+            lang     = s.get('tags', {}).get('language', '')
+            title    = s.get('tags', {}).get('title', '')
+            label    = f'{lang} - {title}' if title else lang
+
+            if br:
+                size_mib = (int(br) * duration) / 8 / 1024 / 1024
+                size_str = f'{size_mib:.2f} MiB  ({int(int(br)/1000)} kb/s)'
+            else:
+                size_str = 'n/a'
+
+            print(f'  Stream {idx} [{stype:8}] {codec:10} {label}')
+            print(f'           Size: {size_str}')
+        "
+        echo "============================================================"
+        ls -lh output.mkv
 
     - name: Screenshot Comparison (10 random frames)
       run: |
