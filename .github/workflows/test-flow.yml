@@ -1,3 +1,4 @@
+
 name: AV1 Mini Encode Test
 
 on:
@@ -73,7 +74,8 @@ jobs:
         -preset 7 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
-        -c:a libopus -b:a 112k -mapping_family 1 \
+        -af "aformat=channel_layouts='5.1|stereo|mono'" \
+        -c:a libopus -b:a 112k \
         -c:s copy \
         output.mkv
 
