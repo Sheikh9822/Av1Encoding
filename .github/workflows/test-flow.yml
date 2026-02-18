@@ -9,8 +9,8 @@ on:
         required: true
 
       crf:
-        description: "CRF value (31-35 recommended)"
-        default: "33"
+        description: "CRF value (31-45 recommended)"
+        default: "40"
 
       sample_start:
         description: "Start time in seconds (0 = full video)"
@@ -68,14 +68,16 @@ jobs:
 
         ffmpeg $CUT -i input.mkv \
         -map 0:v:0 -map 0:a? -map 0:s? \
+        -map_metadata 0 \
+        -map_metadata:s -1 \
         -vf "hqdn3d=0.8:0.8:3:3,gradfun=1.2" \
         -c:v libsvtav1 \
         -pix_fmt yuv420p10le \
-        -preset 7 \
+        -preset 6 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
         -af "aformat=channel_layouts='5.1|stereo|mono'" \
-        -c:a libopus -b:a 112k \
+        -c:a libopus -b:a 64k \
         -c:s copy \
         output.mkv
 
@@ -84,22 +86,44 @@ jobs:
         mediainfo output.mkv
         ls -lh
 
-    - name: Upload Artifact (backup)
+    - name: VMAF Score
+      run: |
+        START=${{ github.event.inputs.sample_start }}
+        DURATION=${{ github.event.inputs.sample_duration }}
+
+        CUT=""
+        if [ "$DURATION" != "0" ]; then
+          CUT="-ss $START -t $DURATION"
+        fi
+
+        # Extract matching reference clip from input (video only, no filters)
+        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v libx264 -preset ultrafast -crf 0 reference.mkv
+
+        # Run VMAF: distorted=output, reference=reference
+        ffmpeg -i output.mkv -i reference.mkv \
+          -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=vmaf.json:n_threads=$(nproc)" \
+          -f null -
+
+        echo ""
+        echo "============================================================"
+        echo "VMAF RESULTS"
+        echo "============================================================"
+        python3 -c "
+        import json
+        with open('vmaf.json') as f:
+            data = json.load(f)
+        pooled = data['pooled_metrics']
+        print(f\"VMAF Score  : {pooled['vmaf']['mean']:.4f}\")
+        print(f\"  Min       : {pooled['vmaf']['min']:.4f}\")
+        print(f\"  Max       : {pooled['vmaf']['max']:.4f}\")
+        print(f\"  Harmonic  : {pooled['vmaf']['harmonic_mean']:.4f}\")
+        "
+        echo "============================================================"
+
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: encoded-file
-        path: output.mkv
-
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: encode-test-${{ github.run_number }}
-        name: Encode Test Run ${{ github.run_number }}
-        body: |
-          AV1 Mini Encode Test
-          CRF: ${{ github.event.inputs.crf }}
-          Start: ${{ github.event.inputs.sample_start }}
-          Duration: ${{ github.event.inputs.sample_duration }}
-        files: output.mkv
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: encoded-crf${{ github.event.inputs.crf }}-run${{ github.run_number }}
+        path: |
+          output.mkv
+          vmaf.json
