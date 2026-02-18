@@ -31,15 +31,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo xz-utils
-
-    - name: Install Static FFmpeg (with libvmaf)
-      run: |
-        wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-        tar -xf ffmpeg-release-amd64-static.tar.xz
-        FFMPEG_STATIC=$(find . -name "ffmpeg" -path "*/ffmpeg-*-amd64-static/ffmpeg" | head -1)
-        sudo cp "$FFMPEG_STATIC" /usr/local/bin/ffmpeg_vmaf
-        ffmpeg_vmaf -version | head -1
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo xz-utils imagemagick
 
     - name: Show System Info
       run: |
@@ -73,7 +65,7 @@ jobs:
           echo "Encoding FULL VIDEO"
         fi
 
-        # Build metadata flags as an array to safely handle spaces in titles
+        # Build metadata flags as array to safely handle spaces in titles
         METADATA_FLAGS=()
         AUDIO_IDX=0
         SUB_IDX=0
@@ -145,27 +137,54 @@ jobs:
         mediainfo output.mkv
         ls -lh
 
-    - name: VMAF Score
+    - name: Screenshot Comparison (10 random frames)
       run: |
-        ffmpeg_vmaf -i output.mkv -i reference.mkv \
-          -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=vmaf.json:n_threads=$(nproc)" \
-          -f null -
+        mkdir -p screenshots
 
-        echo ""
-        echo "============================================================"
-        echo "VMAF RESULTS"
-        echo "============================================================"
+        DURATION=$(ffprobe -v quiet -show_entries format=duration \
+          -of csv=p=0 output.mkv | cut -d'.' -f1)
+        echo "Clip duration: ${DURATION}s"
+
         python3 -c "
-        import json
-        with open('vmaf.json') as f:
-            data = json.load(f)
-        pooled = data['pooled_metrics']
-        print(f\"VMAF Score  : {pooled['vmaf']['mean']:.4f}\")
-        print(f\"  Min       : {pooled['vmaf']['min']:.4f}\")
-        print(f\"  Max       : {pooled['vmaf']['max']:.4f}\")
-        print(f\"  Harmonic  : {pooled['vmaf']['harmonic_mean']:.4f}\")
-        "
-        echo "============================================================"
+        import random
+        duration = int('$DURATION')
+        margin = 2
+        timestamps = sorted(random.sample(range(margin, duration - margin), min(10, duration - margin * 2)))
+        for t in timestamps:
+            print(t)
+        " > timestamps.txt
+
+        cat timestamps.txt
+
+        i=1
+        while read -r T; do
+          echo "Frame $i at ${T}s..."
+
+          ffmpeg -ss $T -i reference.mkv \
+            -vf "scale=960:-1" -frames:v 1 -q:v 2 \
+            "screenshots/src_${i}.png" -y 2>/dev/null
+
+          ffmpeg -ss $T -i output.mkv \
+            -vf "scale=960:-1" -frames:v 1 -q:v 2 \
+            "screenshots/enc_${i}.png" -y 2>/dev/null
+
+          convert \
+            \( "screenshots/src_${i}.png" \
+               -gravity North -background '#00000099' \
+               -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
+               -annotate +0+6 "SOURCE  |  t=${T}s" \) \
+            \( "screenshots/enc_${i}.png" \
+               -gravity North -background '#00000099' \
+               -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
+               -annotate +0+6 "ENCODED  |  CRF=${{ github.event.inputs.crf }}  |  t=${T}s" \) \
+            +append \
+            "screenshots/compare_${i}_t${T}s.jpg"
+
+          echo "  -> compare_${i}_t${T}s.jpg done"
+          i=$((i + 1))
+        done < timestamps.txt
+
+        ls -lh screenshots/compare_*.jpg
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
@@ -173,4 +192,4 @@ jobs:
         name: encoded-crf${{ github.event.inputs.crf }}-run${{ github.run_number }}
         path: |
           output.mkv
-          vmaf.json
+          screenshots/compare_*.jpg
