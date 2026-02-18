@@ -9,7 +9,7 @@ on:
 
       crf:
         description: "CRF value (31-45 recommended)"
-        default: "40"
+        default: "36"
 
       sample_start:
         description: "Start time in seconds (0 = full video)"
