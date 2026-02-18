@@ -1,4 +1,3 @@
-
 name: AV1 Mini Encode Test
 
 on:
@@ -74,8 +73,8 @@ jobs:
           echo "Encoding FULL VIDEO"
         fi
 
-        # Extract track titles and languages from source
-        METADATA_FLAGS=""
+        # Build metadata flags as an array to safely handle spaces in titles
+        METADATA_FLAGS=()
         AUDIO_IDX=0
         SUB_IDX=0
         VIDEO_DONE=0
@@ -100,14 +99,14 @@ jobs:
               ;;
             *) continue ;;
           esac
-          [ -n "$LANG" ]  && METADATA_FLAGS="$METADATA_FLAGS -metadata:s:$SPECIFIER language=$LANG"
-          [ -n "$TITLE" ] && METADATA_FLAGS="$METADATA_FLAGS -metadata:s:$SPECIFIER title=$TITLE"
+          [ -n "$LANG" ]  && METADATA_FLAGS+=(-metadata:s:$SPECIFIER "language=$LANG")
+          [ -n "$TITLE" ] && METADATA_FLAGS+=(-metadata:s:$SPECIFIER "title=$TITLE")
         done < <(ffprobe -v quiet \
           -show_entries stream=codec_type:stream_tags=language,title \
           -of csv=p=0 input.mkv 2>/dev/null | \
           awk -F',' '{print $1"|"$2"|"$3}')
 
-        echo "Metadata flags:$METADATA_FLAGS"
+        echo "Metadata flags: ${METADATA_FLAGS[@]}"
 
         # Start reference extraction in background
         echo "Starting reference extraction in background..."
@@ -120,7 +119,7 @@ jobs:
         -map 0:v:0 -map 0:a? -map 0:s? \
         -map_metadata 0 \
         -map_metadata:s -1 \
-        $METADATA_FLAGS \
+        "${METADATA_FLAGS[@]}" \
         -vf "hqdn3d=0.8:0.8:3:3,gradfun=1.2" \
         -c:v libsvtav1 \
         -pix_fmt yuv420p10le \
@@ -133,7 +132,6 @@ jobs:
         output.mkv &
         ENCODE_PID=$!
 
-        # Wait for both and check exit codes
         echo "Waiting for reference extraction..."
         wait $REF_PID || { echo "Reference extraction failed"; exit 1; }
         echo "Reference done."
