@@ -4,35 +4,68 @@ on:
   workflow_dispatch:
     inputs:
       source_url:
-        description: "Direct video URL (optional)"
-        required: false
+        description: "Direct video URL"
+        required: true
+
       crf:
-        description: "CRF value"
-        required: false
+        description: "CRF value (31-35 recommended)"
         default: "33"
+
+      sample_start:
+        description: "Start time in seconds (0 = full video)"
+        default: "0"
+
+      sample_duration:
+        description: "Duration seconds (0 = full video)"
+        default: "120"
 
 jobs:
   encode:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-    - name: Checkout
+    - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Install FFmpeg + MKVToolNix
+    - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y ffmpeg mkvtoolnix wget
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo
 
-    - name: Download Source (if URL provided)
-      if: ${{ github.event.inputs.source_url != '' }}
+    - name: Show System Info
       run: |
+        lscpu
+        free -h
+        df -h
+
+    - name: Download Source
+      run: |
+        echo "Downloading source..."
         wget -O input.mkv "${{ github.event.inputs.source_url }}"
 
-    - name: Encode AV1 Mini
+    - name: Media Info
+      run: mediainfo input.mkv
+
+    - name: Encode Video (Sample or Full)
       run: |
         CRF=${{ github.event.inputs.crf }}
-        ffmpeg -i input.mkv \
+        START=${{ github.event.inputs.sample_start }}
+        DURATION=${{ github.event.inputs.sample_duration }}
+
+        echo "CRF: $CRF"
+        echo "Start: $START"
+        echo "Duration: $DURATION"
+
+        CUT=""
+        if [ "$DURATION" != "0" ]; then
+          CUT="-ss $START -t $DURATION"
+          echo "Encoding SAMPLE CLIP"
+        else
+          echo "Encoding FULL VIDEO"
+        fi
+
+        ffmpeg $CUT -i input.mkv \
         -map 0:v:0 -map 0:a? -map 0:s? \
         -vf "hqdn3d=0.8:0.8:3:3,gradfun=1.2" \
         -c:v libsvtav1 \
@@ -44,11 +77,27 @@ jobs:
         -c:s copy \
         output.mkv
 
-    - name: Create Release
+    - name: Show Output Info
+      run: |
+        mediainfo output.mkv
+        ls -lh
+
+    - name: Upload Artifact (backup)
+      uses: actions/upload-artifact@v4
+      with:
+        name: encoded-file
+        path: output.mkv
+
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: test-${{ github.run_number }}
-        name: AV1 Encode Test Run ${{ github.run_number }}
+        tag_name: encode-test-${{ github.run_number }}
+        name: Encode Test Run ${{ github.run_number }}
+        body: |
+          AV1 Mini Encode Test
+          CRF: ${{ github.event.inputs.crf }}
+          Start: ${{ github.event.inputs.sample_start }}
+          Duration: ${{ github.event.inputs.sample_duration }}
         files: output.mkv
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
