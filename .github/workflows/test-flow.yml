@@ -56,7 +56,7 @@ jobs:
     - name: Media Info
       run: mediainfo input.mkv
 
-    - name: Encode Video (Sample or Full)
+    - name: Encode + Extract Reference (Parallel)
       run: |
         CRF=${{ github.event.inputs.crf }}
         START=${{ github.event.inputs.sample_start }}
@@ -74,10 +74,53 @@ jobs:
           echo "Encoding FULL VIDEO"
         fi
 
+        # Extract track titles and languages from source
+        METADATA_FLAGS=""
+        AUDIO_IDX=0
+        SUB_IDX=0
+        VIDEO_DONE=0
+
+        while IFS='|' read -r TYPE LANG TITLE; do
+          case "$TYPE" in
+            video)
+              if [ "$VIDEO_DONE" = "0" ]; then
+                SPECIFIER="v:0"
+                VIDEO_DONE=1
+              else
+                continue
+              fi
+              ;;
+            audio)
+              SPECIFIER="a:$AUDIO_IDX"
+              AUDIO_IDX=$((AUDIO_IDX + 1))
+              ;;
+            subtitle)
+              SPECIFIER="s:$SUB_IDX"
+              SUB_IDX=$((SUB_IDX + 1))
+              ;;
+            *) continue ;;
+          esac
+          [ -n "$LANG" ]  && METADATA_FLAGS="$METADATA_FLAGS -metadata:s:$SPECIFIER language=$LANG"
+          [ -n "$TITLE" ] && METADATA_FLAGS="$METADATA_FLAGS -metadata:s:$SPECIFIER title=$TITLE"
+        done < <(ffprobe -v quiet \
+          -show_entries stream=codec_type:stream_tags=language,title \
+          -of csv=p=0 input.mkv 2>/dev/null | \
+          awk -F',' '{print $1"|"$2"|"$3}')
+
+        echo "Metadata flags:$METADATA_FLAGS"
+
+        # Start reference extraction in background
+        echo "Starting reference extraction in background..."
+        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv &
+        REF_PID=$!
+
+        # Start encode in background
+        echo "Starting AV1 encode in background..."
         ffmpeg $CUT -i input.mkv \
         -map 0:v:0 -map 0:a? -map 0:s? \
         -map_metadata 0 \
         -map_metadata:s -1 \
+        $METADATA_FLAGS \
         -vf "hqdn3d=0.8:0.8:3:3,gradfun=1.2" \
         -c:v libsvtav1 \
         -pix_fmt yuv420p10le \
@@ -87,7 +130,17 @@ jobs:
         -af "aformat=channel_layouts='5.1|stereo|mono'" \
         -c:a libopus -b:a 64k \
         -c:s copy \
-        output.mkv
+        output.mkv &
+        ENCODE_PID=$!
+
+        # Wait for both and check exit codes
+        echo "Waiting for reference extraction..."
+        wait $REF_PID || { echo "Reference extraction failed"; exit 1; }
+        echo "Reference done."
+
+        echo "Waiting for encode..."
+        wait $ENCODE_PID || { echo "Encode failed"; exit 1; }
+        echo "Encode done."
 
     - name: Show Output Info
       run: |
@@ -96,18 +149,6 @@ jobs:
 
     - name: VMAF Score
       run: |
-        START=${{ github.event.inputs.sample_start }}
-        DURATION=${{ github.event.inputs.sample_duration }}
-
-        CUT=""
-        if [ "$DURATION" != "0" ]; then
-          CUT="-ss $START -t $DURATION"
-        fi
-
-        # Extract reference clip (stream copy, no re-encode)
-        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv
-
-        # Run VMAF using static ffmpeg with libvmaf
         ffmpeg_vmaf -i output.mkv -i reference.mkv \
           -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=vmaf.json:n_threads=$(nproc)" \
           -f null -
