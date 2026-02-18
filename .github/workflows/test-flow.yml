@@ -14,7 +14,7 @@ on:
 
       preset:
         description: "SVT-AV1 preset (4=slower/better, 6=faster/worse)"
-        default: "4"
+        default: "5"
 
       film_grain:
         description: "Film grain synthesis (0=off, 4=light, 8=heavy)"
