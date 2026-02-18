@@ -1,3 +1,4 @@
+
 name: AV1 Mini Encode Test
 
 on:
@@ -9,7 +10,7 @@ on:
 
       crf:
         description: "CRF value (31-45 recommended)"
-        default: "36"
+        default: "40"
 
       sample_start:
         description: "Start time in seconds (0 = full video)"
@@ -102,12 +103,12 @@ jobs:
 
         # Start reference extraction in background
         echo "Starting reference extraction in background..."
-        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv &
+        ffmpeg -nostdin $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv &
         REF_PID=$!
 
         # Start encode in background
         echo "Starting AV1 encode in background..."
-        ffmpeg $CUT -i input.mkv \
+        ffmpeg -nostdin $CUT -i input.mkv \
         -map 0:v:0 -map 0:a? -map 0:s? \
         -map_metadata 0 \
         -map_metadata:s -1 \
@@ -160,11 +161,11 @@ jobs:
         while read -r T; do
           echo "Frame $i at ${T}s..."
 
-          ffmpeg -ss $T -i reference.mkv \
+          ffmpeg -nostdin -ss $T -i reference.mkv \
             -vf "scale=960:-1" -frames:v 1 -q:v 2 \
             "screenshots/src_${i}.png" -y 2>/dev/null
 
-          ffmpeg -ss $T -i output.mkv \
+          ffmpeg -nostdin -ss $T -i output.mkv \
             -vf "scale=960:-1" -frames:v 1 -q:v 2 \
             "screenshots/enc_${i}.png" -y 2>/dev/null
 
