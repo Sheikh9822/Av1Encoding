@@ -32,7 +32,15 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo xz-utils
+
+    - name: Install Static FFmpeg (with libvmaf)
+      run: |
+        wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+        tar -xf ffmpeg-release-amd64-static.tar.xz
+        FFMPEG_STATIC=$(find . -name "ffmpeg" -path "*/ffmpeg-*-amd64-static/ffmpeg" | head -1)
+        sudo cp "$FFMPEG_STATIC" /usr/local/bin/ffmpeg_vmaf
+        ffmpeg_vmaf -version | head -1
 
     - name: Show System Info
       run: |
@@ -96,11 +104,11 @@ jobs:
           CUT="-ss $START -t $DURATION"
         fi
 
-        # Extract matching reference clip from input (video only, no filters)
-        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v libx264 -preset ultrafast -crf 0 reference.mkv
+        # Extract reference clip (stream copy, no re-encode)
+        ffmpeg $CUT -i input.mkv -map 0:v:0 -c:v copy reference.mkv
 
-        # Run VMAF: distorted=output, reference=reference
-        ffmpeg -i output.mkv -i reference.mkv \
+        # Run VMAF using static ffmpeg with libvmaf
+        ffmpeg_vmaf -i output.mkv -i reference.mkv \
           -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=vmaf.json:n_threads=$(nproc)" \
           -f null -
 
