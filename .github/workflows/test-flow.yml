@@ -145,24 +145,28 @@ jobs:
       run: |
         mkdir -p screenshots
 
-        DURATION=$(ffprobe -v quiet -show_entries format=duration \
-          -of csv=p=0 output.mkv | cut -d'.' -f1)
-        echo "Clip duration: ${DURATION}s"
+        DURATION_MS=$(ffprobe -v quiet -show_entries format=duration \
+          -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
+        echo "Clip duration: ${DURATION_MS}ms"
 
         python3 -c "
         import random
-        duration = int('$DURATION')
-        margin = 2
-        timestamps = sorted(random.sample(range(margin, duration - margin), min(10, duration - margin * 2)))
-        for t in timestamps:
-            print(t)
+        duration_ms = $DURATION_MS
+        margin_ms = 2000
+        timestamps_ms = sorted(random.sample(range(margin_ms, duration_ms - margin_ms), min(10, duration_ms - margin_ms * 2)))
+        for t in timestamps_ms:
+            h = t // 3600000
+            m = (t % 3600000) // 60000
+            s = (t % 60000) // 1000
+            ms = t % 1000
+            print(f'{h:02d}:{m:02d}:{s:02d}.{ms:03d}')
         " > timestamps.txt
 
         cat timestamps.txt
 
         i=1
         while read -r T; do
-          echo "Frame $i at ${T}s..."
+          echo "Frame $i at ${T}..."
 
           ffmpeg -nostdin -i reference.mkv \
             -ss $T -vf "scale=960:-1" -frames:v 1 -q:v 2 \
@@ -176,15 +180,15 @@ jobs:
             \( "screenshots/src_${i}.png" \
                -gravity North -background '#00000099' \
                -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
-               -annotate +0+6 "SOURCE  |  t=${T}s" \) \
+               -annotate +0+6 "SOURCE  |  t=${T}" \) \
             \( "screenshots/enc_${i}.png" \
                -gravity North -background '#00000099' \
                -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
-               -annotate +0+6 "ENCODED  |  CRF=${{ github.event.inputs.crf }}  |  t=${T}s" \) \
+               -annotate +0+6 "ENCODED  |  CRF=${{ github.event.inputs.crf }}  |  t=${T}" \) \
             +append \
-            "screenshots/compare_${i}_t${T}s.jpg"
+            "screenshots/compare_${i}_${T//:/-}.jpg"
 
-          echo "  -> compare_${i}_t${T}s.jpg done"
+          echo "  -> compare_${i}_${T//:/-}.jpg done"
           i=$((i + 1))
         done < timestamps.txt
 
