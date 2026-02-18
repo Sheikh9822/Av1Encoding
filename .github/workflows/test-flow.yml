@@ -73,7 +73,7 @@ jobs:
         -preset 7 \
         -crf $CRF \
         -svtav1-params "tune=0:aq-mode=1:enable-overlays=0:scd=0:fast-decode=1" \
-        -c:a libopus -b:a 112k \
+        -c:a libopus -b:a 112k -mapping_family 1 \
         -c:s copy \
         output.mkv
 
