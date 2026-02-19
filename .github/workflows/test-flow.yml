@@ -7,14 +7,14 @@ on:
         description: "Direct video URL"
         required: true
       crf:
-        description: "CRF (32–38 for anime, lower = better quality)"
-        default: "35"
+        description: "CRF (38-42 anime small, 33-37 quality, 28-32 archival)"
+        default: "42"
       max_bitrate:
-        description: "Safety Maxrate (0 to disable, e.g. 1200k)"
-        default: "0"
+        description: "Safety Maxrate (0 = off, e.g. 800k)"
+        default: "800k"
       preset:
-        description: "Preset (4 = Best Quality, 6 = Faster)"
-        default: "4"
+        description: "Preset (6 = Balanced, 4 = Best Quality/Slow)"
+        default: "6"
       film_grain:
         description: "Film Grain Synthesis (0-50). Use 4-8 for grainy sources."
         default: "0"
@@ -22,13 +22,16 @@ on:
         description: "Enable Denoise for noisy sources (true/false)"
         default: "false"
       deband:
-        description: "Enable Debanding/gradfun for banding sources (true/false)"
+        description: "Enable Debanding for banded sources (true/false)"
         default: "false"
+      strip_attachments:
+        description: "Strip font attachments — true for web sources, false for BD (keeps fonts for subtitles)"
+        default: "true"
       sample_start:
         description: "Start Time in seconds (e.g. 120)"
         default: "0"
       sample_duration:
-        description: "Duration in seconds (0 = Full)"
+        description: "Duration in seconds (0 = Full encode)"
         default: "60"
 
 jobs:
@@ -67,18 +70,23 @@ jobs:
           echo "RATE_ARGS=" >> $GITHUB_ENV
         else
           BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
-          BUF_VAL=$(( BITRATE_VAL * 4 ))   # 4x maxrate buffer is plenty
+          BUF_VAL=$(( BITRATE_VAL * 4 ))
           echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
         fi
 
+        # ── THREAD COUNT ───────────────────────────────────────────────
+        THREADS=$(nproc)
+        echo "THREADS=$THREADS" >> $GITHUB_ENV
+
         # ── SVT-AV1 PARAMS ─────────────────────────────────────────────
-        # aq-mode=2: variance-based AQ (best for anime flat areas)
-        # enable-overlays=1: improves OP/ED fades
-        # scd=1: scene change detection
-        # lookahead=60: good balance; 120 provides diminishing returns
-        # keyint=240: ~10s at 24fps, good for seeking
-        # irefresh-type=2: open GOP for better compression
-        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=240:irefresh-type=2"
+        # aq-mode=2:         variance AQ (best for flat anime areas)
+        # enable-overlays=1: improves fades in OP/ED
+        # scd=1:             scene change detection
+        # lookahead=60:      good balance, 120 has diminishing returns
+        # keyint=360:        fewer keyframes = better compression (~15s at 24fps)
+        # irefresh-type=2:   open GOP
+        # lp=N:              pin thread count to all available cores
+        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ github.event.inputs.film_grain }}"
         if [ "$GRAIN" -gt "0" ]; then
           PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
@@ -86,19 +94,26 @@ jobs:
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
         # ── VIDEO FILTER CHAIN ─────────────────────────────────────────
-        # Build filter chain explicitly — never apply gradfun by default
+        # Filters are opt-in only — nothing applied by default
         VFILTER=""
         if [ "${{ github.event.inputs.denoise }}" = "true" ]; then
-          # Conservative denoise; aggressive values destroy line art
           VFILTER="hqdn3d=1:1:3:3"
         fi
         if [ "${{ github.event.inputs.deband }}" = "true" ]; then
           [ -n "$VFILTER" ] && VFILTER="$VFILTER,"
           VFILTER="${VFILTER}gradfun=1.5:16"
         fi
-        # Fallback: pass-through (null filter still required by -vf)
         [ -z "$VFILTER" ] && VFILTER="null"
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
+
+        # ── ATTACHMENT HANDLING ────────────────────────────────────────
+        # Web sources: strip embedded fonts to save 5-15MB
+        # BD sources:  keep fonts so PGS/ASS subtitles render correctly
+        ATTACH_ARG=""
+        if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
+          ATTACH_ARG="-map -0:t"
+        fi
+        echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
 
         # ── METADATA EXTRACTION ────────────────────────────────────────
         METADATA_FLAGS=()
@@ -120,7 +135,6 @@ jobs:
             audio)
               SPEC="a:$A_IDX"
               if [ "${CHANNELS:-0}" -gt 2 ]; then
-                # Proper downmix with centre and LFE bleed
                 AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',"
                 AUDIO_FILTER+="pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE"
                 AUDIO_FILTER+="[a$A_IDX];"
@@ -173,6 +187,7 @@ jobs:
           -map 0:v:0 \
           $AUDIO_MAP \
           -map 0:s? \
+          $ATTACH_ARG \
           -map_metadata 0 \
           -map_metadata:s -1 \
           "${METADATA_ARGS[@]}" \
@@ -184,12 +199,29 @@ jobs:
           -crf ${{ github.event.inputs.crf }} \
           $RATE_ARGS \
           -svtav1-params "$SVT_PARAMS" \
-          -c:a libopus -b:a 96k -ac 2 \
+          -c:a libopus -b:a 64k -ac 2 \
           -c:s copy \
           output.mkv
 
     - name: Show Results
-      run: mediainfo output.mkv
+      run: |
+        echo "=== MediaInfo ==="
+        mediainfo output.mkv
+        echo ""
+        echo "=== Stream Bitrates ==="
+        ffprobe -v quiet \
+          -show_entries stream=codec_type,codec_name,bit_rate \
+          -of default output.mkv
+        echo ""
+        echo "=== File Sizes ==="
+        echo "Source : $(du -sh input.mkv  | cut -f1)"
+        echo "Output : $(du -sh output.mkv | cut -f1)"
+        echo "Ratio  : $(python3 -c "
+        import os
+        src = os.path.getsize('input.mkv')
+        out = os.path.getsize('output.mkv')
+        print(f'{out/src*100:.1f}% of source ({src//1024//1024}MB -> {out//1024//1024}MB)')
+        ")"
 
     - name: Generate Comparison
       run: |
@@ -199,15 +231,21 @@ jobs:
         python3 -c "
         import random
         duration = $DUR_MS
-        timestamps = sorted(random.sample(range(2000, duration - 2000), 5))
+        if duration < 10000:
+            timestamps = [duration // 2]
+        else:
+            count = min(5, (duration - 4000) // 2000)
+            timestamps = sorted(random.sample(range(2000, duration - 2000), count))
         for t in timestamps:
             print(f'{t//3600000:02d}:{(t%3600000)//60000:02d}:{(t%60000)//1000:02d}.{t%1000:03d}')
         " > timestamps.txt
 
         i=1
         while read -r T; do
-          ffmpeg -nostdin -ss "$T" -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
-          ffmpeg -nostdin -ss "$T" -i output.mkv    -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
+          ffmpeg -nostdin -ss "$T" -i reference.mkv \
+            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
+          ffmpeg -nostdin -ss "$T" -i output.mkv \
+            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           convert \
             \( "screenshots/src_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
@@ -216,7 +254,7 @@ jobs:
             \( "screenshots/enc_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
                -fill white -font DejaVu-Sans -pointsize 20 \
-               -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
+               -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | ${{ github.event.inputs.max_bitrate }}" \) \
             +append "screenshots/compare_$i.jpg"
           i=$((i + 1))
         done < timestamps.txt
@@ -224,7 +262,7 @@ jobs:
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: "AV1-${{ github.event.inputs.crf }}-${{ github.event.inputs.preset }}"
+        name: "AV1-CRF${{ github.event.inputs.crf }}-P${{ github.event.inputs.preset }}"
         path: |
           output.mkv
           screenshots/*.jpg
