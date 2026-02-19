@@ -1,4 +1,4 @@
-name: AV1 Ultimate (Fix Convert Error)
+name: AV1 Ultimate (Fixed Dependencies)
 
 on:
   workflow_dispatch:
@@ -58,7 +58,7 @@ jobs:
         tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
         rm ffmpeg-master-latest-linux64-gpl.tar.xz
 
-    # ADDED imagemagick HERE
+    # --- FIX: Added 'imagemagick' back here ---
     - name: Install Dependencies
       run: |
         echo "$(pwd)/tools/bin" >> $GITHUB_PATH
@@ -72,7 +72,7 @@ jobs:
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
              -O input.mkv "${{ github.event.inputs.source_url }}"
 
-    # --- 3. CONFIGURE ENVIRONMENT ---
+    # --- 3. CONFIGURE ---
     - name: Configure Environment
       id: prep
       shell: bash
@@ -85,7 +85,7 @@ jobs:
         if [ "$DURATION" != "0" ]; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
 
-        # MAXRATE
+        # MAXRATE / BUFSIZE
         MAXRATE="${{ github.event.inputs.max_bitrate }}"
         if [ "$MAXRATE" = "0" ] || [ -z "$MAXRATE" ]; then
           echo "RATE_ARGS=" >> $GITHUB_ENV
@@ -95,7 +95,7 @@ jobs:
           echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
         fi
 
-        # PARAMS
+        # SVT-AV1 PARAMS
         THREADS=$(nproc)
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ github.event.inputs.film_grain }}"
@@ -121,7 +121,7 @@ jobs:
         fi
         echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
 
-        # METADATA & AUDIO
+        # METADATA & AUDIO MAPPING
         METADATA_FLAGS=()
         GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
         [ -n "$GLOBAL_TITLE" ] && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
@@ -137,14 +137,18 @@ jobs:
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
+              # Downmix Logic
               if [ "${CHANNELS:-0}" -gt 2 ]; then
                 AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$A_IDX];"
                 AUDIO_MAP+="-map [a$A_IDX] "
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
+              
+              # Title Cleaning
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
+              
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
@@ -161,6 +165,8 @@ jobs:
         [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
+        
+        # Save flags to file
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
     - name: Extract Reference
@@ -173,6 +179,7 @@ jobs:
     - name: Run AV1 Encode
       shell: bash
       run: |
+        # Load Metadata Flags
         METADATA_ARGS=()
         if [ -f metadata_flags.bin ]; then
           while IFS= read -r -d '' flag; do
@@ -180,6 +187,7 @@ jobs:
           done < metadata_flags.bin
         fi
 
+        # Load Filter Complex
         F_ARGS=()
         [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
 
@@ -234,7 +242,7 @@ except:
         mkdir -p screenshots
         DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
         
-        # Python Safe Block
+        # Timestamp generation
         python3 -c "
 import random
 d = $DUR_MS
@@ -252,7 +260,7 @@ for t in ts:
           ffmpeg -nostdin -ss "$T" -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss "$T" -i output.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
-          # Convert Command (ImageMagick)
+          # Comparison Image
           convert \
             \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T sec" \) \
             \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
