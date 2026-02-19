@@ -1,4 +1,4 @@
-name: AV1 Ultimate (Full Metadata Fix)
+name: AV1 Ultimate (Start Time + Full Metadata)
 
 on:
   workflow_dispatch:
@@ -18,8 +18,11 @@ on:
       film_grain:
         description: "Film Grain (0-50). 0 = Off."
         default: "0"
+      sample_start:
+        description: "Start Time in seconds (e.g. 120)"
+        default: "0"
       sample_duration:
-        description: "Duration (0=Full)"
+        description: "Duration in seconds (0=Full)"
         default: "60"
 
 jobs:
@@ -41,35 +44,43 @@ jobs:
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
              -O input.mkv "${{ github.event.inputs.source_url }}"
 
-    - name: Configure (Metadata & Auto-Buffer)
+    - name: Configure (Start Time + Buffer + Metadata)
       id: prep
       run: |
-        # 1. BUFFER CALCULATION (9.5 Seconds)
+        # 1. CUT ARGUMENTS (Start + Duration)
+        START="${{ github.event.inputs.sample_start }}"
+        DURATION="${{ github.event.inputs.sample_duration }}"
+        CUT_ARGS=""
+        if [ "$START" != "0" ]; then CUT_ARGS="-ss $START "; fi
+        if [ "$DURATION" != "0" ]; then CUT_ARGS+="-t $DURATION "; fi
+        echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
+        echo "Processing from $START for $DURATION seconds."
+
+        # 2. BUFFER CALCULATION (9.5 Seconds)
         BITRATE_VAL=$(echo "${{ github.event.inputs.max_bitrate }}" | tr -dc '0-9')
         BUF_VAL=$(( (BITRATE_VAL * 19) / 2 ))
         echo "BUFSIZE=${BUF_VAL}k" >> $GITHUB_ENV
 
-        # 2. SVT-AV1 DYNAMIC PARAMS
+        # 3. SVT-AV1 DYNAMIC PARAMS
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=120:keyint=240"
         GRAIN=${{ github.event.inputs.film_grain }}
         if [ "$GRAIN" -gt "0" ]; then PARAMS="$PARAMS:film-grain=$GRAIN"; fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
-        # 3. GLOBAL & STREAM METADATA LOGIC
+        # 4. GLOBAL & STREAM METADATA LOGIC
         METADATA_FLAGS=()
         
-        # Get Global Title
+        # Capture Original File Title
         GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
-        if [ -z "$GLOBAL_TITLE" ]; then GLOBAL_TITLE="AV1 Mini Encode"; fi
-        METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
-        echo "Global Title Found: $GLOBAL_TITLE"
+        if [ -n "$GLOBAL_TITLE" ]; then
+           METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
+        fi
 
         AUDIO_MAP=""
         AUDIO_FILTER=""
         A_IDX=0
         S_IDX=0
         
-        # Parse all streams (Type, Channels, Language, Title)
         ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title \
           -of csv=p=0 input.mkv > streams.csv
 
@@ -77,7 +88,6 @@ jobs:
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
-              # Handle Downmix
               if [ "$CHANNELS" -gt 2 ]; then
                 AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$A_IDX];"
                 AUDIO_MAP+="-map [a$A_IDX] "
@@ -85,8 +95,7 @@ jobs:
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
               
-              # Rename Metadata: Fixes "Stereoch" bug
-              # This removes "5.1", "7.1", "ch", and "channels" specifically
+              # Clean Title: Removes "5.1", "7.1", "ch" etc.
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|ch|channels)//Ig' | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE}: Stereo"
               
@@ -97,7 +106,6 @@ jobs:
             
             subtitle)
               SPEC="s:$S_IDX"
-              # Capture Subtitle Lang and Title exactly as in source
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
               S_IDX=$((S_IDX + 1))
@@ -108,29 +116,21 @@ jobs:
         [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        
-        # Save array to a binary file to preserve spaces in titles
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
     - name: Extract Reference
       run: |
-        DUR="${{ github.event.inputs.sample_duration }}"
-        [ "$DUR" != "0" ] && CUT="-t $DUR" || CUT=""
-        ffmpeg -hide_banner -y -probesize 100M -analyzeduration 100M -i input.mkv $CUT -map 0:v:0 -c:v copy reference.mkv
+        ffmpeg -hide_banner -y -probesize 100M -analyzeduration 100M $CUT_ARGS -i input.mkv -map 0:v:0 -c:v copy reference.mkv
 
     - name: Run AV1 Encode
       run: |
-        DUR="${{ github.event.inputs.sample_duration }}"
-        [ "$DUR" != "0" ] && CUT="-t $DUR" || CUT=""
-        
-        # Load Metadata Flags safely
         METADATA_ARGS=()
         while IFS= read -r -d '' flag; do METADATA_ARGS+=("$flag"); done < metadata_flags.bin
         
         F_ARGS=()
         if [ -n "$AUDIO_FILTER" ]; then F_ARGS=(-filter_complex "$AUDIO_FILTER"); fi
         
-        ffmpeg -hide_banner -y -probesize 100M -analyzeduration 100M -i input.mkv $CUT \
+        ffmpeg -hide_banner -y -probesize 100M -analyzeduration 100M $CUT_ARGS -i input.mkv \
         -map 0:v:0 \
         $AUDIO_MAP \
         -map 0:s? \
@@ -171,7 +171,7 @@ jobs:
           ffmpeg -nostdin -ss $T -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss $T -i output.mkv    -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           convert \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
-                  \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | Bitrate:${{ github.event.inputs.max_bitrate }} | CRF:${{ github.event.inputs.crf }}" \) \
+                  \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | ${{ github.event.inputs.max_bitrate }} | CRF ${{ github.event.inputs.crf }}" \) \
                   +append "screenshots/compare_$i.jpg"
           i=$((i+1))
         done < timestamps.txt
@@ -179,7 +179,7 @@ jobs:
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: "AV1-Pro-Metadata-${{ github.event.inputs.max_bitrate }}"
+        name: "AV1-Ultimate-${{ github.event.inputs.max_bitrate }}"
         path: |
           output.mkv
           screenshots/*.jpg
