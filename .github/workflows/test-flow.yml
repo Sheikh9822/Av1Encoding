@@ -1,4 +1,4 @@
-name: AV1 Ultimate (9.5s Buffer + Pro Metadata)
+name: AV1 Ultimate (Fixed Dependencies)
 
 on:
   workflow_dispatch:
@@ -30,10 +30,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install
+    - name: Install Dependencies
       run: |
         sudo apt update -y
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo fonts-dejavu
+        # Added 'imagemagick' back so 'convert' works
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu
 
     - name: Download (Bypass 403)
       run: |
@@ -86,13 +87,6 @@ jobs:
              [ -n "$NEW_TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$NEW_TITLE")
              
              IDX=$((IDX + 1))
-          fi
-          
-          # Subtitle Metadata
-          if [ "$TYPE" == "subtitle" ]; then
-             # We assume subtitle index matches loop order for simplicity in this context
-             # (A more complex script tracks separate indices, but this usually works for MKV)
-             :
           fi
         done < streams.csv
         
@@ -168,6 +162,7 @@ jobs:
           ffmpeg -nostdin -ss $T -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss $T -i output.mkv    -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
+          # Convert command (ImageMagick)
           convert \
             \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
             \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | Bitrate:${{ github.event.inputs.max_bitrate }}" \) \
