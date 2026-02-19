@@ -7,22 +7,25 @@ on:
         description: "Direct video URL"
         required: true
       crf:
-        description: "CRF (Rec: 50-60)"
-        default: "55"
+        description: "CRF (Rec: 44–48 for tiny anime encodes)"
+        default: "46"
       max_bitrate:
-        description: "Target Bitrate (e.g. 350k, 600k)"
-        default: "350k"
+        description: "Safety Maxrate (e.g. 350k, 600k, 900k)"
+        default: "600k"
       preset:
-        description: "Preset (6=Good Speed/Quality)"
+        description: "Preset (6 = Good Speed/Quality)"
         default: "6"
       film_grain:
         description: "Film Grain (0-50). 0 = Off."
         default: "0"
+      denoise:
+        description: "Enable Denoise for noisy sources (true/false)"
+        default: "false"
       sample_start:
         description: "Start Time in seconds (e.g. 120)"
         default: "0"
       sample_duration:
-        description: "Duration in seconds (0=Full)"
+        description: "Duration in seconds (0 = Full)"
         default: "60"
 
 jobs:
@@ -41,36 +44,41 @@ jobs:
     - name: Download Source
       run: |
         wget --header="Referer: https://kwik.cx/" \
-             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
              -O input.mkv "${{ github.event.inputs.source_url }}"
 
     - name: Configure (Start Time + Buffer + Metadata)
       id: prep
       run: |
-        # 1. CUT ARGUMENTS (Start + Duration)
+        # CUT ARGUMENTS
         START="${{ github.event.inputs.sample_start }}"
         DURATION="${{ github.event.inputs.sample_duration }}"
         CUT_ARGS=""
         if [ "$START" != "0" ]; then CUT_ARGS="-ss $START "; fi
         if [ "$DURATION" != "0" ]; then CUT_ARGS+="-t $DURATION "; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
-        echo "Processing from $START for $DURATION seconds."
 
-        # 2. BUFFER CALCULATION (9.5 Seconds)
+        # BUFFER (9.5s VBV)
         BITRATE_VAL=$(echo "${{ github.event.inputs.max_bitrate }}" | tr -dc '0-9')
         BUF_VAL=$(( (BITRATE_VAL * 19) / 2 ))
         echo "BUFSIZE=${BUF_VAL}k" >> $GITHUB_ENV
 
-        # 3. SVT-AV1 DYNAMIC PARAMS
-        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=120:keyint=240"
+        # SVT-AV1 PARAMS (anime tuned)
+        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=120:keyint=360:irefresh-type=2"
         GRAIN=${{ github.event.inputs.film_grain }}
         if [ "$GRAIN" -gt "0" ]; then PARAMS="$PARAMS:film-grain=$GRAIN"; fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
-        # 4. GLOBAL & STREAM METADATA LOGIC
+        # FILTER LOGIC
+        if [ "${{ github.event.inputs.denoise }}" = "true" ]; then
+          VFILTER="hqdn3d=1.5:1.5:6:6,gradfun=1.2"
+        else
+          VFILTER="gradfun=1.2"
+        fi
+        echo "VFILTER=$VFILTER" >> $GITHUB_ENV
+
+        # METADATA EXTRACTION
         METADATA_FLAGS=()
-        
-        # Capture Original File Title
         GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
         if [ -n "$GLOBAL_TITLE" ]; then
            METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
@@ -94,16 +102,12 @@ jobs:
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
-              
-              # Clean Title: Removes "5.1", "7.1", "ch" etc.
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|ch|channels)//Ig' | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE}: Stereo"
-              
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
               ;;
-            
             subtitle)
               SPEC="s:$S_IDX"
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
@@ -138,12 +142,11 @@ jobs:
         -map_metadata:s -1 \
         "${METADATA_ARGS[@]}" \
         "${F_ARGS[@]}" \
-        -vf "hqdn3d=1.5:1.5:6:6,gradfun=1.2" \
+        -vf "$VFILTER" \
         -c:v libsvtav1 \
         -pix_fmt yuv420p10le \
         -preset ${{ github.event.inputs.preset }} \
         -crf ${{ github.event.inputs.crf }} \
-        -b:v ${{ github.event.inputs.max_bitrate }} \
         -maxrate ${{ github.event.inputs.max_bitrate }} \
         -bufsize $BUFSIZE \
         -svtav1-params "$SVT_PARAMS" \
