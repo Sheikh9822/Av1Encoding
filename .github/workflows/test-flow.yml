@@ -1,4 +1,4 @@
-name: AV1 Ultimate (Fix Syntax)
+name: AV1 Ultimate (Fixed Dependencies)
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. Caching Strategy
+    # 1. Cache FFmpeg (SVT-AV1 is included in this static build)
     - name: Cache Tools
       id: cache-tools
       uses: actions/cache@v4
@@ -50,7 +50,6 @@ jobs:
         path: tools
         key: ${{ runner.os }}-ffmpeg-static-v1
 
-    # 2. Download FFmpeg if not cached
     - name: Download FFmpeg (Static)
       if: steps.cache-tools.outputs.cache-hit != 'true'
       run: |
@@ -59,12 +58,13 @@ jobs:
         tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
         rm ffmpeg-master-latest-linux64-gpl.tar.xz
 
-    # 3. Fast Install
+    # 2. Install Dependencies (ADDED imagemagick back)
     - name: Install Dependencies
       run: |
         echo "$(pwd)/tools/bin" >> $GITHUB_PATH
         sudo apt-get update -y
-        sudo apt-get install -y --no-install-recommends mediainfo fonts-dejavu
+        # Added imagemagick back so 'convert' works
+        sudo apt-get install -y --no-install-recommends mediainfo imagemagick fonts-dejavu
 
     - name: Download Source
       run: |
@@ -138,18 +138,14 @@ jobs:
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
-              # Create Audio Mix/Map
               if [ "${CHANNELS:-0}" -gt 2 ]; then
                 AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$A_IDX];"
                 AUDIO_MAP+="-map [a$A_IDX] "
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
-              
-              # Simple Title Cleaning (Simplified to avoid syntax errors)
               CLEAN_TITLE="$TITLE"
               FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo"
-              
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
@@ -166,8 +162,6 @@ jobs:
         [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        
-        # Save flags to file safely
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
     - name: Extract Reference
@@ -180,7 +174,6 @@ jobs:
     - name: Run AV1 Encode
       shell: bash
       run: |
-        # Load Metadata Flags
         METADATA_ARGS=()
         if [ -f metadata_flags.bin ]; then
           while IFS= read -r -d '' flag; do
@@ -188,7 +181,6 @@ jobs:
           done < metadata_flags.bin
         fi
 
-        # Load Filter Complex
         F_ARGS=()
         [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
 
@@ -226,11 +218,8 @@ jobs:
     - name: Generate Comparison
       run: |
         mkdir -p screenshots
-        
-        # 1. Get Duration (MS)
         DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
         
-        # 2. Generate Timestamps (Python Safe Block)
         python3 -c "
         import random
         d = $DUR_MS
@@ -243,13 +232,12 @@ jobs:
             print(t/1000.0)
         " > timestamps.txt
 
-        # 3. Create Images
         i=1
         while read -r T; do
           ffmpeg -nostdin -ss "$T" -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss "$T" -i output.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
-          # Single line convert to prevent syntax errors
+          # Convert now works because imagemagick is installed
           convert \
             \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
             \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
