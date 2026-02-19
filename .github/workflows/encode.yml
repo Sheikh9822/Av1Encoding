@@ -1,3 +1,5 @@
+--- START OF FILE encode.yml.txt ---
+
 name: AV1 Universal Pipeline
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
@@ -76,7 +78,6 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # Pass inputs as ENV vars to prevent YAML syntax breakage
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
         run: |
@@ -108,17 +109,16 @@ jobs:
                 FN="${CUSTOM}.mkv"
             fi
             
-            echo "📥 Downloading Direct Link: $URL"
+            echo "📥 Downloading via yt-dlp (Smart Mode): $URL"
             
-            # Extract domain safely for Referer/Origin headers
-            DOMAIN=$(echo "$URL" | awk -F/ '{print $3}')
-            
-            aria2c -x 16 -s 16 -k 1M \
-              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" \
-              --header="Referer: https://$DOMAIN/" \
-              --header="Origin: https://$DOMAIN" \
-              --check-certificate=false \
-              --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            # Using yt-dlp handles headers/cookies like a browser.
+            # We hook aria2c into it for multi-connection speed.
+            yt-dlp --no-check-certificate \
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" \
+              --downloader aria2c \
+              --downloader-args "aria2c:-x 16 -s 16 -k 1M" \
+              -o "source.mkv" \
+              "$URL"
             
             echo "$FN" > tg_fname.txt
           fi
