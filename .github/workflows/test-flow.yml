@@ -40,199 +40,178 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Install Dependencies
-        run: |
-          sudo apt update -y
-          sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu bc
+    - name: Install Dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu python3
 
-      - name: Download Source
-        run: |
-          wget --header="Referer: https://kwik.cx/" \
-               --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-               -O input.mkv "${{ github.event.inputs.source_url }}"
+    - name: Download Source
+      run: |
+        wget --header="Referer: https://kwik.cx/" \
+             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+             -O input.mkv "${{ github.event.inputs.source_url }}"
 
-      - name: Configure Environment
-        id: prep
-        run: |
-          START="${{ github.event.inputs.sample_start }}"
-          DURATION="${{ github.event.inputs.sample_duration }}"
-          CUT_ARGS=""
-          if [ "$START" != "0" ]; then CUT_ARGS="-ss $START "; fi
-          if [ "$DURATION" != "0" ]; then CUT_ARGS+="-t $DURATION "; fi
-          echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
+    - name: Configure Environment
+      id: prep
+      run: |
+        # CUT ARGS
+        START="${{ github.event.inputs.sample_start }}"
+        DURATION="${{ github.event.inputs.sample_duration }}"
+        CUT_ARGS=""
+        if [ "$START" != "0" ]; then CUT_ARGS="-ss $START"; fi
+        if [ "$DURATION" != "0" ]; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
+        echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
 
-          MAXRATE="${{ github.event.inputs.max_bitrate }}"
-          if [ "$MAXRATE" = "0" ] || [ -z "$MAXRATE" ]; then
-            echo "RATE_ARGS=" >> $GITHUB_ENV
-          else
-            BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
-            BUF_VAL=$(( BITRATE_VAL * 4 ))
-            echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
-          fi
+        # MAXRATE / BUFSIZE
+        MAXRATE="${{ github.event.inputs.max_bitrate }}"
+        if [ "$MAXRATE" = "0" ] || [ -z "$MAXRATE" ]; then
+          echo "RATE_ARGS=" >> $GITHUB_ENV
+        else
+          BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
+          BUF_VAL=$(( BITRATE_VAL * 4 ))
+          echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
+        fi
 
-          THREADS=$(nproc)
-          echo "THREADS=$THREADS" >> $GITHUB_ENV
+        # THREADS
+        THREADS=$(nproc)
+        echo "THREADS=$THREADS" >> $GITHUB_ENV
 
-          PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
-          GRAIN="${{ github.event.inputs.film_grain }}"
-          if [ "$GRAIN" -gt "0" ]; then
-            PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
-          fi
-          echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
+        # SVT-AV1 PARAMS
+        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
+        GRAIN="${{ github.event.inputs.film_grain }}"
+        if [ "$GRAIN" -gt "0" ]; then
+          PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
+        fi
+        echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
-          VFILTER=""
-          if [ "${{ github.event.inputs.denoise }}" = "true" ]; then
-            VFILTER="hqdn3d=1:1:3:3"
-          fi
-          if [ "${{ github.event.inputs.deband }}" = "true" ]; then
-            [ -n "$VFILTER" ] && VFILTER="$VFILTER,"
-            VFILTER="${VFILTER}gradfun=1.5:16"
-          fi
-          [ -z "$VFILTER" ] && VFILTER="null"
-          echo "VFILTER=$VFILTER" >> $GITHUB_ENV
+        # VIDEO FILTER
+        VFILTER=""
+        if [ "${{ github.event.inputs.denoise }}" = "true" ]; then VFILTER="hqdn3d=1:1:3:3"; fi
+        if [ "${{ github.event.inputs.deband }}" = "true" ]; then
+          [ -n "$VFILTER" ] && VFILTER="$VFILTER,"
+          VFILTER="${VFILTER}gradfun=1.5:16"
+        fi
+        [ -z "$VFILTER" ] && VFILTER="null"
+        echo "VFILTER=$VFILTER" >> $GITHUB_ENV
 
-          ATTACH_ARG=""
-          if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
-            ATTACH_ARG="-map -0:t"
-          fi
-          echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
+        # ATTACHMENTS
+        ATTACH_ARG=""
+        if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
+          ATTACH_ARG="-map -0:t"
+        fi
+        echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
 
-          METADATA_FLAGS=()
-          GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title \
-            -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
-          [ -n "$GLOBAL_TITLE" ] && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
+        # METADATA EXTRACTION
+        METADATA_FLAGS=()
+        GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title \
+          -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
+        [ -n "$GLOBAL_TITLE" ] && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
 
-          AUDIO_MAP=""
-          AUDIO_FILTER=""
-          A_IDX=0
-          S_IDX=0
+        AUDIO_MAP=""
+        AUDIO_FILTER=""
+        A_IDX=0
+        S_IDX=0
 
-          ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title \
-            -of csv=p=0 input.mkv > streams.csv
+        ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title \
+          -of csv=p=0 input.mkv > streams.csv
 
-          while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
-            case "$TYPE" in
-              audio)
-                SPEC="a:$A_IDX"
-                if [ "${CHANNELS:-0}" -gt 2 ]; then
-                  AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',"
-                  AUDIO_FILTER+="pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE"
-                  AUDIO_FILTER+="[a$A_IDX];"
-                  AUDIO_MAP+="-map [a$A_IDX] "
-                else
-                  AUDIO_MAP+="-map 0:a:$A_IDX "
-                fi
-                CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
-                FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
-                [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-                METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
-                A_IDX=$((A_IDX + 1))
-                ;;
-              subtitle)
-                SPEC="s:$S_IDX"
-                [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-                [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
-                S_IDX=$((S_IDX + 1))
-                ;;
-            esac
-          done < streams.csv
+        while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
+          case "$TYPE" in
+            audio)
+              SPEC="a:$A_IDX"
+              if [ "${CHANNELS:-0}" -gt 2 ]; then
+                AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',"
+                AUDIO_FILTER+="pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE"
+                AUDIO_FILTER+="[a$A_IDX];"
+                AUDIO_MAP+="-map [a$A_IDX] "
+              else
+                AUDIO_MAP+="-map 0:a:$A_IDX "
+              fi
+              CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
+              FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
+              A_IDX=$((A_IDX + 1))
+              ;;
+            subtitle)
+              SPEC="s:$S_IDX"
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
+              S_IDX=$((S_IDX + 1))
+              ;;
+          esac
+        done < streams.csv
 
-          [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
-          echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
-          echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-          printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
+        [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
+        echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
+        echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
+        printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
-      - name: Estimate AV1 Output Size
-        run: |
-          DURATION=$(ffprobe -v error -show_entries format=duration \
-            -of default=noprint_wrappers=1:nokey=1 input.mkv)
-          DURATION=${DURATION%.*}
-          VBPS=$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=bit_rate -of csv=p=0 input.mkv)
-          VBPS=${VBPS:-800000}
-          VBPS_KB=$((VBPS / 1000))
-          CRF=${{ github.event.inputs.crf }}
-          if [ "$CRF" -le 32 ]; then
-            FACTOR=0.50
-          elif [ "$CRF" -le 37 ]; then
-            FACTOR=0.35
-          else
-            FACTOR=0.20
-          fi
-          EST_SIZE_MB=$(echo "$VBPS_KB * $DURATION * $FACTOR / 8 / 1024" | bc)
-          echo "Estimated AV1 video size: ~${EST_SIZE_MB} MB"
-          echo "EST_SIZE_MB=$EST_SIZE_MB" >> $GITHUB_ENV
+    - name: Extract Reference
+      run: |
+        ffmpeg -hide_banner -y \
+          -probesize 100M -analyzeduration 100M \
+          $CUT_ARGS -i input.mkv \
+          -map 0:v:0 -c:v copy reference.mkv
 
-      - name: Extract Reference
-        run: |
-          ffmpeg -hide_banner -y \
-            -probesize 100M -analyzeduration 100M \
-            $CUT_ARGS -i input.mkv \
-            -map 0:v:0 -c:v copy reference.mkv
+    - name: Run AV1 Encode
+      run: |
+        METADATA_ARGS=()
+        while IFS= read -r -d '' flag; do
+          METADATA_ARGS+=("$flag")
+        done < metadata_flags.bin
 
-      - name: Run AV1 Encode
-        run: |
-          METADATA_ARGS=()
-          while IFS= read -r -d '' flag; do
-            METADATA_ARGS+=("$flag")
-          done < metadata_flags.bin
+        F_ARGS=()
+        [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
 
-          F_ARGS=()
-          [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
+        ffmpeg -hide_banner -y \
+          -probesize 100M -analyzeduration 100M \
+          $CUT_ARGS -i input.mkv \
+          -map 0:v:0 \
+          $AUDIO_MAP \
+          -map 0:s? \
+          $ATTACH_ARG \
+          -map_metadata 0 \
+          -map_metadata:s -1 \
+          "${METADATA_ARGS[@]}" \
+          "${F_ARGS[@]}" \
+          -vf "$VFILTER" \
+          -c:v libsvtav1 \
+          -pix_fmt yuv420p10le \
+          -preset ${{ github.event.inputs.preset }} \
+          -crf ${{ github.event.inputs.crf }} \
+          $RATE_ARGS \
+          -svtav1-params "$SVT_PARAMS" \
+          -c:a libopus -b:a 64k -ac 2 \
+          -c:s copy \
+          output.mkv
 
-          ffmpeg -hide_banner -y \
-            -probesize 100M -analyzeduration 100M \
-            $CUT_ARGS -i input.mkv \
-            -map 0:v:0 \
-            $AUDIO_MAP \
-            -map 0:s? \
-            $ATTACH_ARG \
-            -map_metadata 0 \
-            -map_metadata:s -1 \
-            "${METADATA_ARGS[@]}" \
-            "${F_ARGS[@]}" \
-            -vf "$VFILTER" \
-            -c:v libsvtav1 \
-            -pix_fmt yuv420p10le \
-            -preset ${{ github.event.inputs.preset }} \
-            -crf ${{ github.event.inputs.crf }} \
-            $RATE_ARGS \
-            -svtav1-params "$SVT_PARAMS" \
-            -c:a libopus -b:a 64k -ac 2 \
-            -c:s copy \
-            output.mkv
-
-      - name: Show Results
-        run: |
-          echo "=== Estimated Output Size ==="
-          echo "~${EST_SIZE_MB} MB (based on CRF and source bitrate)"
-          echo ""
-          echo "=== MediaInfo ==="
-          mediainfo output.mkv
-          echo ""
-          echo "=== Stream Bitrates ==="
-          ffprobe -v quiet \
-            -show_entries stream=codec_type,codec_name,bit_rate \
-            -of default output.mkv
-          echo ""
-          echo "=== File Sizes ==="
-          echo "Source : $(du -sh input.mkv  | cut -f1)"
-          echo "Output : $(du -sh output.mkv | cut -f1)"
-          echo "Ratio  : $(python3 -c "
+    - name: Show Results
+      run: |
+        echo "=== MediaInfo ==="
+        mediainfo output.mkv
+        echo ""
+        echo "=== Stream Bitrates ==="
+        ffprobe -v quiet -show_entries stream=codec_type,codec_name,bit_rate \
+          -of default output.mkv
+        echo ""
+        echo "=== File Sizes ==="
+        echo "Source : $(du -sh input.mkv  | cut -f1)"
+        echo "Output : $(du -sh output.mkv" | cut -f1)
+        echo "Ratio  : $(python3 -c "
 import os
 src = os.path.getsize('input.mkv')
 out = os.path.getsize('output.mkv')
 print(f'{out/src*100:.1f}% of source ({src//1024//1024}MB -> {out//1024//1024}MB)')
 ")"
 
-      - name: Generate Comparison
-        run: |
-          mkdir -p screenshots
-          DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv \
-            | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
-          python3 -c "
+    - name: Generate Comparison
+      run: |
+        mkdir -p screenshots
+        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
+        python3 -c "
 import random
 duration = $DUR_MS
 if duration < 10000:
@@ -241,32 +220,32 @@ else:
     count = min(5, (duration - 4000) // 2000)
     timestamps = sorted(random.sample(range(2000, duration - 2000), count))
 for t in timestamps:
-    print(f'{t//3600000:02d}:{(t%3600000)//60000:02d}:{(t%60000)//1000:02d}.{t%1000:03d}')
+    print(t)
 " > timestamps.txt
 
-          i=1
-          while read -r T; do
-            ffmpeg -nostdin -ss "$T" -i reference.mkv \
-              -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
-            ffmpeg -nostdin -ss "$T" -i output.mkv \
-              -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
-            convert \
-              \( "screenshots/src_$i.png" \
-                 -gravity North -background '#00000099' -splice 0x30 \
-                 -fill white -font DejaVu-Sans -pointsize 20 \
-                 -annotate +0+6 "SOURCE | $T" \) \
-              \( "screenshots/enc_$i.png" \
-                 -gravity North -background '#00000099' -splice 0x30 \
-                 -fill white -font DejaVu-Sans -pointsize 20 \
-                 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | ${{ github.event.inputs.max_bitrate }}" \) \
-              +append "screenshots/compare_$i.jpg"
-            i=$((i + 1))
-          done < timestamps.txt
+        i=1
+        while read -r T; do
+          ffmpeg -nostdin -ss "$T" -i reference.mkv \
+            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
+          ffmpeg -nostdin -ss "$T" -i output.mkv \
+            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
+          convert \
+            \( "screenshots/src_$i.png" \
+               -gravity North -background '#00000099' -splice 0x30 \
+               -fill white -font DejaVu-Sans -pointsize 20 \
+               -annotate +0+6 "SOURCE | $T" \) \
+            \( "screenshots/enc_$i.png" \
+               -gravity North -background '#00000099' -splice 0x30 \
+               -fill white -font DejaVu-Sans -pointsize 20 \
+               -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | ${{ github.event.inputs.max_bitrate }}" \) \
+            +append "screenshots/compare_$i.jpg"
+          i=$((i + 1))
+        done < timestamps.txt
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: "AV1-CRF${{ github.event.inputs.crf }}-P${{ github.event.inputs.preset }}"
-          path: |
-            output.mkv
-            screenshots/*.jpg
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: "AV1-CRF${{ github.event.inputs.crf }}-P${{ github.event.inputs.preset }}"
+        path: |
+          output.mkv
+          screenshots/*.jpg
