@@ -1,3 +1,5 @@
+--- START OF FILE encode.yml.txt ---
+
 name: AV1 Universal Pipeline
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
@@ -87,12 +89,16 @@ jobs:
           # Magnet Safety
           elif [[ "$URL" == magnet:* ]]; then
             echo "❌ ERROR: Magnet links are disabled." && exit 1
-          # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
+          # Direct/CDN Logic
           else
             if [ -z "$CUSTOM" ]; then
-                # Extract filename from URL, strip query strings, and decode URL encoding
-                CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-                # Ensure it has a video extension
+                # Handle cases like kwik where filename is in query param ?file=...
+                if [[ "$URL" == *"file="* ]]; then
+                    CLEAN_NAME=$(echo "$URL" | sed -n 's/.*file=\([^&]*\).*/\1/p' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                else
+                    CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                fi
+                
                 if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
                     FN="video.mkv"
                 else
@@ -103,7 +109,16 @@ jobs:
             fi
             
             echo "📥 Downloading Direct Link: $URL"
-            aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            # Extract domain to use as Referer (Fixes 403 Forbidden on most CDNs)
+            DOMAIN=$(echo "$URL" | awk -F[/:] '{print $4}')
+            
+            aria2c -x 16 -s 16 -k 1M \
+              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" \
+              --header="Referer: https://$DOMAIN/" \
+              --header="Origin: https://$DOMAIN" \
+              --check-certificate=false \
+              --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
+            
             echo "$FN" > tg_fname.txt
           fi
 
