@@ -1,4 +1,4 @@
-name: AV1 Ultimate (Start Time + Full Metadata)
+name: AV1 Ultimate (Cached & Fast)
 
 on:
   workflow_dispatch:
@@ -42,10 +42,34 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install Dependencies
+    # 1. Check if we already have FFmpeg cached
+    - name: Cache Tools
+      id: cache-tools
+      uses: actions/cache@v4
+      with:
+        path: tools
+        key: ${{ runner.os }}-ffmpeg-static-v1
+
+    # 2. If not cached, download a high-performance static build
+    - name: Download FFmpeg (Static)
+      if: steps.cache-tools.outputs.cache-hit != 'true'
       run: |
-        sudo apt update -y
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu python3
+        mkdir -p tools
+        echo "Downloading FFmpeg Static Build..."
+        # Using BtbN build which includes libsvtav1 and all necessary libraries
+        wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+        tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
+        rm ffmpeg-master-latest-linux64-gpl.tar.xz
+
+    # 3. Install only the small missing tools (Takes ~10 seconds)
+    - name: Install Small Dependencies
+      run: |
+        # Add cached tools to PATH immediately
+        echo "$(pwd)/tools/bin" >> $GITHUB_PATH
+        
+        # Fast install of small utilities (ImageMagick/Python/Wget are already pre-installed on Ubuntu runners)
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends mediainfo fonts-dejavu
 
     - name: Download Source
       run: |
@@ -129,10 +153,8 @@ jobs:
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
-              # Clean title logic
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
-              
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
@@ -149,13 +171,10 @@ jobs:
         [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        
-        # Write array to file to preserve spaces
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
-    - name: Extract Reference (Lossless)
+    - name: Extract Reference
       run: |
-        # Use x264 qp 0 for frame-accurate cuts (stream copy is inaccurate for cuts)
         ffmpeg -hide_banner -y \
           -probesize 100M -analyzeduration 100M \
           $CUT_ARGS -i input.mkv \
@@ -209,49 +228,38 @@ jobs:
         SIZE_OUT=$(du -sh output.mkv | cut -f1)
         echo "Source : $SIZE_SRC"
         echo "Output : $SIZE_OUT"
-        
-        # Calculate Ratio using python separately to avoid bash quoting hell
         python3 -c "
-        import os
-        try:
-            src = os.path.getsize('input.mkv')
-            out = os.path.getsize('output.mkv')
-            print(f'Ratio  : {out/src*100:.1f}% of source ({src//1048576}MB -> {out//1048576}MB)')
-        except:
-            print('Ratio calc failed')
-        "
+import os
+try:
+    src = os.path.getsize('input.mkv')
+    out = os.path.getsize('output.mkv')
+    print(f'Ratio  : {out/src*100:.1f}% of source')
+except:
+    pass
+"
 
     - name: Generate Comparison
       run: |
         mkdir -p screenshots
-        # Get duration in milliseconds
         DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
-        
-        # Python script to generate random timestamps
         python3 -c "
-        import random
-        duration = $DUR_MS
-        if duration < 10000:
-            timestamps = [duration // 2]
-        else:
-            # Pick 5 random timestamps, avoiding the very start and end
-            count = min(5, (duration - 4000) // 2000)
-            timestamps = sorted(random.sample(range(2000, duration - 2000), count))
-        for t in timestamps:
-            print(t/1000.0)
-        " > timestamps.txt
+import random
+duration = $DUR_MS
+if duration < 10000:
+    timestamps = [duration // 2]
+else:
+    count = min(5, (duration - 4000) // 2000)
+    timestamps = sorted(random.sample(range(2000, duration - 2000), count))
+for t in timestamps:
+    print(t/1000.0)
+" > timestamps.txt
 
         i=1
         while read -r T; do
-          # Create side-by-side comparison
-          # Note: reference.mkv and output.mkv are both cut, so timestamps match
-          
           ffmpeg -nostdin -ss "$T" -i reference.mkv \
             -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
-            
           ffmpeg -nostdin -ss "$T" -i output.mkv \
             -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
-            
           convert \
             \( "screenshots/src_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
@@ -260,9 +268,8 @@ jobs:
             \( "screenshots/enc_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
                -fill white -font DejaVu-Sans -pointsize 20 \
-               -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | ${{ github.event.inputs.max_bitrate }}" \) \
+               -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
             +append "screenshots/compare_$i.jpg"
-          
           i=$((i + 1))
         done < timestamps.txt
 
