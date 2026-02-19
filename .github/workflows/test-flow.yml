@@ -1,4 +1,4 @@
-name: AV1 Mini Encode Test
+name: AV1 Mini Encode Test (Pro)
 
 on:
   workflow_dispatch:
@@ -6,20 +6,29 @@ on:
       source_url:
         description: "Direct video URL"
         required: true
+
       crf:
-        description: "CRF value (31-45 recommended)"
-        default: "40"
+        description: "CRF (Quality). Higher = Smaller file. (Rec: 45-55 for low bitrate)"
+        default: "50"
+
+      max_bitrate:
+        description: "Max Bitrate Cap (e.g. 600k, 1M). Controls file size ceiling."
+        default: "600k"
+
       preset:
-        description: "SVT-AV1 preset (4=slower/better, 6=faster/worse)"
+        description: "SVT-AV1 Preset (4=Slow/Best, 6=Fast/Good)"
         default: "5"
+
       film_grain:
-        description: "Film grain synthesis (0=off, 4=light, 8=heavy)"
+        description: "Film Grain (0=None, 4=Light, 8=Heavy)"
         default: "4"
+
       sample_start:
-        description: "Start time in seconds (0 = full video)"
-        default: "0"
+        description: "Start Time (Seconds)"
+        default: "120"
+
       sample_duration:
-        description: "Duration seconds (0 = full video)"
+        description: "Duration (Seconds). 0 = Full Video"
         default: "120"
 
 jobs:
@@ -34,142 +43,229 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update
-        # Added fonts-dejavu so ImageMagick text annotation works
+        # fonts-dejavu is crucial for the Screenshot step (ImageMagick text)
         sudo apt install -y ffmpeg mkvtoolnix wget mediainfo xz-utils imagemagick fonts-dejavu
 
-    - name: Download Source (with Headers)
+    - name: System Debug Info
+      run: |
+        echo "--- CPU ---"
+        lscpu | grep "Model name"
+        echo "--- RAM ---"
+        free -h
+        echo "--- DISK ---"
+        df -h
+
+    - name: Download Source (Bypass 403)
       run: |
         echo "Downloading source..."
-        # Added User-Agent and Referer to bypass HTTP 403 Forbidden
+        # Uses User-Agent and Referer to look like a browser and bypass 403 Forbidden
         wget \
           --header="Referer: https://kwik.cx/" \
           --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
           -O input.mkv "${{ github.event.inputs.source_url }}"
-        
-        # Verify download validity
+
+        # Verify file exists and is not empty
         if [ ! -s input.mkv ]; then
-          echo "Error: File is empty or failed to download."
+          echo "Error: Download failed or file is empty (0 bytes)."
           exit 1
         fi
         ls -lh input.mkv
 
-    - name: Media Info
+    - name: Media Info (Source)
       run: mediainfo input.mkv
 
-    - name: Encode & Reference
+    - name: Prepare Metadata & Filters
+      id: prep
       run: |
-        CRF=${{ github.event.inputs.crf }}
-        PRESET=${{ github.event.inputs.preset }}
-        FILM_GRAIN=${{ github.event.inputs.film_grain }}
-        START=${{ github.event.inputs.sample_start }}
-        DURATION=${{ github.event.inputs.sample_duration }}
+        # Load Inputs
+        CRF="${{ github.event.inputs.crf }}"
+        MAX_BITRATE="${{ github.event.inputs.max_bitrate }}"
+        PRESET="${{ github.event.inputs.preset }}"
+        GRAIN="${{ github.event.inputs.film_grain }}"
+        START="${{ github.event.inputs.sample_start }}"
+        DURATION="${{ github.event.inputs.sample_duration }}"
 
-        CUT_OPTS=""
+        echo "Settings: CRF=$CRF | MaxRate=$MAX_BITRATE | Preset=$PRESET"
+
+        # 1. Prepare Cut Arguments
+        CUT_ARGS=""
         if [ "$DURATION" != "0" ]; then
-          CUT_OPTS="-ss $START -t $DURATION"
-          echo "Encoding SAMPLE CLIP (${DURATION}s)"
+          CUT_ARGS="-ss $START -t $DURATION"
+          echo "Encoding Mode: SAMPLE (${DURATION}s)"
         else
-          echo "Encoding FULL VIDEO"
+          echo "Encoding Mode: FULL VIDEO"
         fi
 
-        # 1. Extract Reference (Running sequentially to save RAM/CPU for the encode)
-        echo "--- Extracting Reference ---"
-        ffmpeg -hide_banner -y $CUT_OPTS -i input.mkv \
+        # 2. Analyze Audio for Smart Downmixing & Metadata Renaming
+        METADATA_FLAGS=()
+        AUDIO_IDX=0
+        SUB_IDX=0
+        CHANNEL_COUNTS=()
+        
+        # We save the ffprobe output to a temp file to read loop safely
+        ffprobe -v quiet -show_entries stream=codec_type:stream=channels:stream_tags=language,title \
+          -of csv=p=0 input.mkv > streams.csv
+
+        while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
+          case "$TYPE" in
+            video)
+              # Skip video stream metadata logic here, handled globally
+              continue 
+              ;;
+            audio)
+              SPECIFIER="a:$AUDIO_IDX"
+              CHANNEL_COUNTS+=("$CHANNELS")
+              
+              # Rename Metadata Title: Replace "5.1", "7.1", "Surround" with "Stereo"
+              # This ensures the output file looks professional in players like VLC
+              NEW_TITLE=$(echo "$TITLE" | sed \
+                -e 's/5\.1[^a-zA-Z]*/Stereo/Ig' \
+                -e 's/7\.1[^a-zA-Z]*/Stereo/Ig' \
+                -e 's/[0-9]\.[0-9]ch/Stereo/Ig' \
+                -e 's/Surround/Stereo/Ig')
+              
+              # Add language and title tags if they exist
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "language=$LANG")
+              [ -n "$NEW_TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "title=$NEW_TITLE")
+              
+              AUDIO_IDX=$((AUDIO_IDX + 1))
+              ;;
+            subtitle)
+              SPECIFIER="s:$SUB_IDX"
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "language=$LANG")
+              [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "title=$TITLE")
+              SUB_IDX=$((SUB_IDX + 1))
+              ;;
+          esac
+        done < streams.csv
+
+        # 3. Build Audio Filter Complex (Downmix 5.1 -> Stereo)
+        AUDIO_FILTER=""
+        AUDIO_MAP=""
+        for idx in "${!CHANNEL_COUNTS[@]}"; do
+          CH="${CHANNEL_COUNTS[$idx]}"
+          # If channels > 2, apply explicit stereo downmix with good centering coefficients
+          if [ "$CH" -gt 2 ] 2>/dev/null; then
+            AUDIO_FILTER+="[0:a:$idx]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$idx];"
+            AUDIO_MAP+="-map [a$idx] "
+          else
+            AUDIO_MAP+="-map 0:a:$idx "
+          fi
+        done
+        # Remove trailing semicolon
+        AUDIO_FILTER="${AUDIO_FILTER%;}"
+
+        # 4. Save Variables for Next Steps
+        echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
+        echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
+        echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
+        
+        # Save array to file (null-delimited) to handle spaces safely
+        printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
+
+    - name: Extract Reference (Source)
+      run: |
+        echo "--- Extracting Reference Clip ---"
+        # Extract raw source segment for comparison
+        ffmpeg -hide_banner -y $CUT_ARGS -i input.mkv \
           -map 0:v:0 -c:v copy reference.mkv
 
-        # 2. Run AV1 Encode
-        # Using -ac 2 with libopus automatically handles standard downmixing robustly
+    - name: Run AV1 Encode
+      run: |
         echo "--- Starting AV1 Encode ---"
         
-        ffmpeg -hide_banner -y $CUT_OPTS -i input.mkv \
-          -map 0:v:0 \
-          -map 0:a? \
-          -map 0:s? \
-          -map_metadata 0 \
-          -vf "hqdn3d=1.5:1.5:6:6,gradfun=1.2" \
-          -c:v libsvtav1 \
-          -pix_fmt yuv420p10le \
-          -preset $PRESET \
-          -crf $CRF \
-          -svtav1-params "tune=0:aq-mode=2:enable-overlays=1:scd=1:lookahead=120:film-grain=$FILM_GRAIN:tile-columns=2:tile-rows=1:keyint=240" \
-          -c:a libopus -b:a 128k -ac 2 \
-          -c:s copy \
-          output.mkv
+        # Load Metadata Flags safely
+        METADATA_ARGS=()
+        while IFS= read -r -d '' flag; do
+          METADATA_ARGS+=("$flag")
+        done < metadata_flags.bin
 
-    - name: Show Output Info
+        # Prepare Filter Args
+        FILTER_COMPLEX_ARGS=()
+        if [ -n "$AUDIO_FILTER" ]; then
+          FILTER_COMPLEX_ARGS=(-filter_complex "$AUDIO_FILTER")
+        fi
+
+        # FFmpeg Command Breakdown:
+        # - hqdn3d: Denoise BEFORE encode (essential for low bitrate)
+        # - gradfun: Prevents banding in dark scenes
+        # - libsvtav1: The encoder
+        # - b:v + maxrate: Constrains the bitrate to prevent spikes
+        # - libopus: High quality audio at low bitrate
+        
+        ffmpeg -hide_banner -y $CUT_ARGS -i input.mkv \
+        -map 0:v:0 \
+        $AUDIO_MAP \
+        -map 0:s? \
+        -map_metadata 0 \
+        -map_metadata:s -1 \
+        "${METADATA_ARGS[@]}" \
+        "${FILTER_COMPLEX_ARGS[@]}" \
+        -vf "hqdn3d=2.0:2.0:6:6,gradfun=1.2" \
+        -c:v libsvtav1 \
+        -pix_fmt yuv420p10le \
+        -preset ${{ github.event.inputs.preset }} \
+        -crf ${{ github.event.inputs.crf }} \
+        -b:v ${{ github.event.inputs.max_bitrate }} \
+        -maxrate ${{ github.event.inputs.max_bitrate }} \
+        -bufsize 4M \
+        -svtav1-params "tune=0:aq-mode=2:enable-overlays=1:scd=1:lookahead=120:film-grain=${{ github.event.inputs.film_grain }}:keyint=240" \
+        -c:a libopus -b:a 96k -ac 2 \
+        -c:s copy \
+        output.mkv
+
+    - name: Show Results
       run: |
-        mediainfo output.mkv
+        echo "--- Final File Size ---"
         ls -lh output.mkv
+        echo "--- Media Info ---"
+        mediainfo output.mkv
 
-    - name: Screenshot Comparison
+    - name: Generate Comparison Screenshots
       run: |
         mkdir -p screenshots
         
-        # Get actual duration of output
-        DURATION_MS=$(ffprobe -v quiet -show_entries format=duration \
-          -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
+        # Calculate duration in milliseconds
+        DURATION_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
         
-        echo "Clip duration: ${DURATION_MS}ms"
-
-        # Generate timestamps
+        # Generate 5 random timestamps (avoiding start/end black frames)
         python3 -c "
         import random
-        duration_ms = $DURATION_MS
-        margin_ms = 1000
-        available = duration_ms - margin_ms * 2
-        
-        if available < 1:
-            count = min(5, duration_ms // 1000)
-            timestamps_ms = sorted(random.sample(range(0, duration_ms), count))
-        else:
-            count = 10
-            timestamps_ms = sorted(random.sample(range(margin_ms, duration_ms - margin_ms), count))
-            
-        print(f'Sampling {count} frames', flush=True)
-        for t in timestamps_ms:
-            h = t // 3600000
-            m = (t % 3600000) // 60000
-            s = (t % 60000) // 1000
-            ms = t % 1000
-            print(f'{h:02d}:{m:02d}:{s:02d}.{ms:03d}')
-        " > timestamps_raw.txt
+        duration = $DURATION_MS
+        count = 5
+        # Margin of 2 seconds
+        if duration > 5000:
+            timestamps = sorted(random.sample(range(2000, duration-2000), count))
+            for t in timestamps:
+                # Format HH:MM:SS.mmm
+                print(f'{t//3600000:02d}:{(t%3600000)//60000:02d}:{(t%60000)//1000:02d}.{t%1000:03d}')
+        " > timestamps.txt
 
-        tail -n +2 timestamps_raw.txt > timestamps.txt
-        
         i=1
         while read -r T; do
-          echo "Generating Compare Frame $i at ${T}..."
+          echo "Generating comparison for timestamp: $T"
           
-          # Extract Source Frame
-          ffmpeg -nostdin -ss $T -i reference.mkv \
-            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_${i}.png" -y 2>/dev/null
+          # Extract frames
+          ffmpeg -nostdin -ss $T -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
+          ffmpeg -nostdin -ss $T -i output.mkv    -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
-          # Extract Encoded Frame
-          ffmpeg -nostdin -ss $T -i output.mkv \
-            -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_${i}.png" -y 2>/dev/null
-
-          # Combine
+          # Stitch images using ImageMagick
           convert \
-            \( "screenshots/src_${i}.png" \
-               -gravity North -background '#00000099' \
-               -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
-               -annotate +0+6 "SOURCE  |  t=${T}" \) \
-            \( "screenshots/enc_${i}.png" \
-               -gravity North -background '#00000099' \
-               -splice 0x30 -fill white -font DejaVu-Sans -pointsize 22 \
-               -annotate +0+6 "AV1  |  CRF=${{ github.event.inputs.crf }}  |  Grain=${{ github.event.inputs.film_grain }}" \) \
+            \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | Time: $T" \) \
+            \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | Bitrate: ${{ github.event.inputs.max_bitrate }} | CRF: ${{ github.event.inputs.crf }}" \) \
             +append \
-            "screenshots/compare_${i}_${T//:/-}.jpg"
+            "screenshots/compare_frame_${i}.jpg"
             
-          i=$((i + 1))
+          i=$((i+1))
         done < timestamps.txt
 
-        rm -f reference.mkv screenshots/*.png
+        # Cleanup raw images to save artifact space
+        rm -f screenshots/*.png reference.mkv
 
-    - name: Upload Artifact
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: "AV1-CRF${{ github.event.inputs.crf }}-P${{ github.event.inputs.preset }}-G${{ github.event.inputs.film_grain }}"
+        name: "AV1-Bitrate${{ github.event.inputs.max_bitrate }}-CRF${{ github.event.inputs.crf }}"
         path: |
           output.mkv
-          screenshots/compare_*.jpg
+          screenshots/*.jpg
