@@ -1,5 +1,3 @@
---- START OF FILE encode.yml.txt ---
-
 name: AV1 Universal Pipeline
 run-name: "🚀 [MISSION]: ${{ inputs.ui_title || inputs.custom_name || 'Target' }}"
 
