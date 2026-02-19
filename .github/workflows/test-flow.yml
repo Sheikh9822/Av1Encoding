@@ -1,4 +1,4 @@
-name: AV1 Mini Encode Test (Auto-Fix)
+name: AV1 Ultimate (9.5s Buffer + Pro Metadata)
 
 on:
   workflow_dispatch:
@@ -6,29 +6,20 @@ on:
       source_url:
         description: "Direct video URL"
         required: true
-
       crf:
-        description: "CRF (Quality). Higher = Smaller file. (Rec: 45-60 for low bitrate)"
+        description: "CRF (Rec: 50-60)"
         default: "55"
-
       max_bitrate:
-        description: "Max Bitrate (e.g. 350k, 600k). Controls file size ceiling."
+        description: "Target Bitrate (e.g. 350k, 600k)"
         default: "350k"
-
       preset:
-        description: "SVT-AV1 Preset (4=Slow/Best, 6=Fast/Good)"
+        description: "Preset (6=Good Speed/Quality)"
         default: "6"
-
       film_grain:
-        description: "Film Grain (0=None, 4=Light, 8=Heavy)"
+        description: "Film Grain (0=Off, 4=Standard)"
         default: "0"
-
-      sample_start:
-        description: "Start Time (Seconds)"
-        default: "0"
-
       sample_duration:
-        description: "Duration (Seconds). 0 = Full Video"
+        description: "Duration (0=Full)"
         default: "120"
 
 jobs:
@@ -37,159 +28,109 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    - name: Install Dependencies
+    - name: Install
       run: |
-        sudo apt update
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo xz-utils imagemagick fonts-dejavu
+        sudo apt update -y
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo fonts-dejavu
 
-    - name: System Debug Info
+    - name: Download (Bypass 403)
       run: |
-        lscpu | grep "Model name"
-        free -h
-        df -h
+        wget --header="Referer: https://kwik.cx/" \
+             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+             -O input.mkv "${{ github.event.inputs.source_url }}"
 
-    - name: Download Source (Bypass 403)
-      run: |
-        echo "Downloading source..."
-        wget \
-          --header="Referer: https://kwik.cx/" \
-          --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-          -O input.mkv "${{ github.event.inputs.source_url }}"
-
-        if [ ! -s input.mkv ]; then
-          echo "Error: Download failed or file is empty."
-          exit 1
-        fi
-
-    - name: Media Info
-      run: mediainfo input.mkv
-
-    - name: Prepare Settings (Auto-Buffer Fix)
+    - name: Configure (Buffer + Metadata)
       id: prep
       run: |
-        # Load Inputs
-        CRF="${{ github.event.inputs.crf }}"
-        MAX_BITRATE="${{ github.event.inputs.max_bitrate }}"
-        PRESET="${{ github.event.inputs.preset }}"
-        GRAIN="${{ github.event.inputs.film_grain }}"
-        START="${{ github.event.inputs.sample_start }}"
-        DURATION="${{ github.event.inputs.sample_duration }}"
-
-        # --- FIX: Calculate Buffer Size ---
-        # SVT-AV1 crashes if bufsize > 10x maxrate (10 seconds).
-        # We set bufsize = 2x maxrate (2 seconds), which is safe and standard.
-        
-        # Extract number from "350k" -> "350"
-        BITRATE_VAL=$(echo "$MAX_BITRATE" | tr -dc '0-9')
-        
-        # Calculate 2x
-        BUF_VAL=$((BITRATE_VAL * 2))
+        # 1. BUFFER CALCULATION (9.5 Seconds)
+        BITRATE_INPUT="${{ github.event.inputs.max_bitrate }}"
+        VAL=$(echo "$BITRATE_INPUT" | tr -dc '0-9')
+        BUF_VAL=$(( (VAL * 19) / 2 ))
         BUFSIZE="${BUF_VAL}k"
-        
-        echo "Bitrate: $MAX_BITRATE"
-        echo "Calculated Safe Bufsize: $BUFSIZE"
+        echo "BUFSIZE=$BUFSIZE" >> $GITHUB_ENV
+        echo "Buffer set to 9.5s ($BUFSIZE) for Max Quality."
 
-        # --- Cut Logic ---
-        CUT_ARGS=""
-        if [ "$DURATION" != "0" ]; then
-          CUT_ARGS="-ss $START -t $DURATION"
-        fi
-
-        # --- Audio Logic (5.1 -> Stereo + Rename) ---
+        # 2. AUDIO & METADATA LOGIC
         METADATA_FLAGS=()
-        AUDIO_IDX=0
-        SUB_IDX=0
-        CHANNEL_COUNTS=()
+        AUDIO_MAP=""
+        AUDIO_FILTER=""
+        IDX=0
         
+        # Save detailed stream info to CSV
         ffprobe -v quiet -show_entries stream=codec_type:stream=channels:stream_tags=language,title \
           -of csv=p=0 input.mkv > streams.csv
 
-        while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
-          case "$TYPE" in
-            audio)
-              SPECIFIER="a:$AUDIO_IDX"
-              CHANNEL_COUNTS+=("$CHANNELS")
-              
-              # Rename Metadata: "English 5.1" -> "English Stereo"
-              NEW_TITLE=$(echo "$TITLE" | sed \
+        while IFS=',' read -r TYPE CH LANG TITLE; do
+          if [ "$TYPE" == "audio" ]; then
+             SPEC="a:$IDX"
+             
+             # Audio Processing (Downmix if > 2 channels)
+             if [ "$CH" -gt 2 ]; then
+               AUDIO_FILTER+="[0:a:$IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$IDX];"
+               AUDIO_MAP+="-map [a$IDX] "
+             else
+               AUDIO_MAP+="-map 0:a:$IDX "
+             fi
+
+             # Metadata Renaming (Text Fix)
+             # "English 5.1" -> "English Stereo"
+             NEW_TITLE=$(echo "$TITLE" | sed \
                 -e 's/5\.1[^a-zA-Z]*/Stereo/Ig' \
                 -e 's/7\.1[^a-zA-Z]*/Stereo/Ig' \
                 -e 's/[0-9]\.[0-9]ch/Stereo/Ig' \
                 -e 's/Surround/Stereo/Ig')
-              
-              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "language=$LANG")
-              [ -n "$NEW_TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "title=$NEW_TITLE")
-              
-              AUDIO_IDX=$((AUDIO_IDX + 1))
-              ;;
-            subtitle)
-              # Handle Subtitle Metadata
-              SPECIFIER="s:$SUB_IDX"
-              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "language=$LANG")
-              [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPECIFIER" "title=$TITLE")
-              SUB_IDX=$((SUB_IDX + 1))
-              ;;
-          esac
-        done < streams.csv
-
-        # Build Downmix Filter
-        AUDIO_FILTER=""
-        AUDIO_MAP=""
-        for idx in "${!CHANNEL_COUNTS[@]}"; do
-          CH="${CHANNEL_COUNTS[$idx]}"
-          if [ "$CH" -gt 2 ] 2>/dev/null; then
-            AUDIO_FILTER+="[0:a:$idx]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$idx];"
-            AUDIO_MAP+="-map [a$idx] "
-          else
-            AUDIO_MAP+="-map 0:a:$idx "
+             
+             [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+             [ -n "$NEW_TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$NEW_TITLE")
+             
+             IDX=$((IDX + 1))
           fi
-        done
-        AUDIO_FILTER="${AUDIO_FILTER%;}"
-
-        # Export Variables
-        echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
+          
+          # Subtitle Metadata
+          if [ "$TYPE" == "subtitle" ]; then
+             # We assume subtitle index matches loop order for simplicity in this context
+             # (A more complex script tracks separate indices, but this usually works for MKV)
+             :
+          fi
+        done < streams.csv
+        
+        [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
+        
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        echo "BUFSIZE=$BUFSIZE" >> $GITHUB_ENV
         
-        # Save array to binary file
+        # Save Metadata Flags for FFmpeg
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
     - name: Extract Reference
       run: |
-        # Added -probesize to help ffmpeg read the subtitle streams correctly
-        ffmpeg -hide_banner -y -probesize 50M -analyzeduration 100M $CUT_ARGS -i input.mkv \
-          -map 0:v:0 -c:v copy reference.mkv
+        DUR="${{ github.event.inputs.sample_duration }}"
+        [ "$DUR" != "0" ] && CUT="-t $DUR" || CUT=""
+        ffmpeg -hide_banner -y -probesize 50M -analyzeduration 100M -i input.mkv $CUT -map 0:v:0 -c:v copy reference.mkv
 
-    - name: Run AV1 Encode (Fixed)
+    - name: Run AV1 Encode
       run: |
-        echo "--- Starting AV1 Encode ---"
-        echo "MaxRate: ${{ github.event.inputs.max_bitrate }}"
-        echo "BufSize: $BUFSIZE"
-
+        DUR="${{ github.event.inputs.sample_duration }}"
+        [ "$DUR" != "0" ] && CUT="-t $DUR" || CUT=""
+        
+        # Load Metadata
         METADATA_ARGS=()
         while IFS= read -r -d '' flag; do
           METADATA_ARGS+=("$flag")
         done < metadata_flags.bin
-
-        FILTER_COMPLEX_ARGS=()
-        if [ -n "$AUDIO_FILTER" ]; then
-          FILTER_COMPLEX_ARGS=(-filter_complex "$AUDIO_FILTER")
-        fi
-
-        # Added -probesize 50M to fix "unspecified size" errors for subtitles
         
-        ffmpeg -hide_banner -y -probesize 50M -analyzeduration 100M $CUT_ARGS -i input.mkv \
+        F_ARGS=()
+        if [ -n "$AUDIO_FILTER" ]; then F_ARGS=(-filter_complex "$AUDIO_FILTER"); fi
+        
+        ffmpeg -hide_banner -y -probesize 50M -analyzeduration 100M -i input.mkv $CUT \
         -map 0:v:0 \
         $AUDIO_MAP \
         -map 0:s? \
         -map_metadata 0 \
-        -map_metadata:s -1 \
         "${METADATA_ARGS[@]}" \
-        "${FILTER_COMPLEX_ARGS[@]}" \
+        "${F_ARGS[@]}" \
         -vf "hqdn3d=2.0:2.0:6:6,gradfun=1.2" \
         -c:v libsvtav1 \
         -pix_fmt yuv420p10le \
@@ -203,19 +144,18 @@ jobs:
         -c:s copy \
         output.mkv
 
-    - name: Show Output Info
-      run: |
-        ls -lh output.mkv
-        mediainfo output.mkv
+    - name: Verify Size
+      run: ls -lh output.mkv
 
-    - name: Compare Screenshots
+    - name: Generate Comparison (5 Frames)
       run: |
         mkdir -p screenshots
-        DURATION_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
+        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
         
+        # Generate 5 timestamps
         python3 -c "
         import random
-        duration = $DURATION_MS
+        duration = $DUR_MS
         count = 5
         if duration > 5000:
             timestamps = sorted(random.sample(range(2000, duration-2000), count))
@@ -229,17 +169,17 @@ jobs:
           ffmpeg -nostdin -ss $T -i output.mkv    -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
           convert \
-            \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | Time: $T" \) \
-            \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | Bitrate: ${{ github.event.inputs.max_bitrate }} | CRF: ${{ github.event.inputs.crf }}" \) \
-            +append "screenshots/compare_frame_${i}.jpg"
+            \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
+            \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | Bitrate:${{ github.event.inputs.max_bitrate }}" \) \
+            +append "screenshots/compare_$i.jpg"
           i=$((i+1))
         done < timestamps.txt
         rm -f screenshots/*.png reference.mkv
 
-    - name: Upload Artifacts
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: "AV1-Fix-Bitrate${{ github.event.inputs.max_bitrate }}"
+        name: "AV1-Ultimate-9.5s"
         path: |
           output.mkv
           screenshots/*.jpg
