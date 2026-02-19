@@ -1,4 +1,5 @@
 name: AV1 Ultimate (Start Time + Full Metadata)
+
 on:
   workflow_dispatch:
     inputs:
@@ -128,8 +129,10 @@ jobs:
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
+              # Clean title logic
               CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
+              
               [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
@@ -146,21 +149,26 @@ jobs:
         [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
+        
+        # Write array to file to preserve spaces
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
-    - name: Extract Reference
+    - name: Extract Reference (Lossless)
       run: |
+        # Use x264 qp 0 for frame-accurate cuts (stream copy is inaccurate for cuts)
         ffmpeg -hide_banner -y \
           -probesize 100M -analyzeduration 100M \
           $CUT_ARGS -i input.mkv \
-          -map 0:v:0 -c:v copy reference.mkv
+          -map 0:v:0 -c:v libx264 -qp 0 -preset ultrafast reference.mkv
 
     - name: Run AV1 Encode
       run: |
         METADATA_ARGS=()
-        while IFS= read -r -d '' flag; do
-          METADATA_ARGS+=("$flag")
-        done < metadata_flags.bin
+        if [ -f metadata_flags.bin ]; then
+          while IFS= read -r -d '' flag; do
+            METADATA_ARGS+=("$flag")
+          done < metadata_flags.bin
+        fi
 
         F_ARGS=()
         [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
@@ -190,54 +198,71 @@ jobs:
     - name: Show Results
       run: |
         echo "=== MediaInfo ==="
-        mediainfo output.mkv
+        mediainfo output.mkv | head -n 20
         echo ""
         echo "=== Stream Bitrates ==="
         ffprobe -v quiet -show_entries stream=codec_type,codec_name,bit_rate \
           -of default output.mkv
         echo ""
         echo "=== File Sizes ==="
-        echo "Source : $(du -sh input.mkv  | cut -f1)"
-        echo "Output : $(du -sh output.mkv" | cut -f1)
-        echo "Ratio  : $(python3 -c "
-import os
-src = os.path.getsize('input.mkv')
-out = os.path.getsize('output.mkv')
-print(f'{out/src*100:.1f}% of source ({src//1024//1024}MB -> {out//1024//1024}MB)')
-")"
+        SIZE_SRC=$(du -sh input.mkv | cut -f1)
+        SIZE_OUT=$(du -sh output.mkv | cut -f1)
+        echo "Source : $SIZE_SRC"
+        echo "Output : $SIZE_OUT"
+        
+        # Calculate Ratio using python separately to avoid bash quoting hell
+        python3 -c "
+        import os
+        try:
+            src = os.path.getsize('input.mkv')
+            out = os.path.getsize('output.mkv')
+            print(f'Ratio  : {out/src*100:.1f}% of source ({src//1048576}MB -> {out//1048576}MB)')
+        except:
+            print('Ratio calc failed')
+        "
 
     - name: Generate Comparison
       run: |
         mkdir -p screenshots
+        # Get duration in milliseconds
         DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
+        
+        # Python script to generate random timestamps
         python3 -c "
-import random
-duration = $DUR_MS
-if duration < 10000:
-    timestamps = [duration // 2]
-else:
-    count = min(5, (duration - 4000) // 2000)
-    timestamps = sorted(random.sample(range(2000, duration - 2000), count))
-for t in timestamps:
-    print(t)
-" > timestamps.txt
+        import random
+        duration = $DUR_MS
+        if duration < 10000:
+            timestamps = [duration // 2]
+        else:
+            # Pick 5 random timestamps, avoiding the very start and end
+            count = min(5, (duration - 4000) // 2000)
+            timestamps = sorted(random.sample(range(2000, duration - 2000), count))
+        for t in timestamps:
+            print(t/1000.0)
+        " > timestamps.txt
 
         i=1
         while read -r T; do
+          # Create side-by-side comparison
+          # Note: reference.mkv and output.mkv are both cut, so timestamps match
+          
           ffmpeg -nostdin -ss "$T" -i reference.mkv \
             -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
+            
           ffmpeg -nostdin -ss "$T" -i output.mkv \
             -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
+            
           convert \
             \( "screenshots/src_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
                -fill white -font DejaVu-Sans -pointsize 20 \
-               -annotate +0+6 "SOURCE | $T" \) \
+               -annotate +0+6 "SOURCE | $T sec" \) \
             \( "screenshots/enc_$i.png" \
                -gravity North -background '#00000099' -splice 0x30 \
                -fill white -font DejaVu-Sans -pointsize 20 \
                -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | ${{ github.event.inputs.max_bitrate }}" \) \
             +append "screenshots/compare_$i.jpg"
+          
           i=$((i + 1))
         done < timestamps.txt
 
