@@ -79,7 +79,7 @@ jobs:
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
         run: |
-          URL="$VIDEO_URL"
+          URL="${{ github.event.inputs.video_url }}"
           
           # Telegram Logic
           if [[ "$URL" == tg_file:* ]] || [[ "$URL" == https://t.me/* ]]; then
@@ -87,17 +87,12 @@ jobs:
           # Magnet Safety
           elif [[ "$URL" == magnet:* ]]; then
             echo "❌ ERROR: Magnet links are disabled." && exit 1
-          # Direct/CDN Logic
+          # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
           else
             if [ -z "$CUSTOM" ]; then
-                # Handle cases like kwik where filename is in query param ?file=...
-                if [[ "$URL" == *"file="* ]]; then
-                    CLEAN_NAME=$(echo "$URL" | sed -n 's/.*file=\([^&]*\).*/\1/p' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-                else
-                    CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
-                fi
-                
-                # Validation
+                # Extract filename from URL, strip query strings, and decode URL encoding
+                CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
+                # Ensure it has a video extension
                 if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
                     FN="video.mkv"
                 else
@@ -107,17 +102,8 @@ jobs:
                 FN="${CUSTOM}.mkv"
             fi
             
-            echo "📥 Downloading via yt-dlp (Smart Mode): $URL"
-            
-            # Using yt-dlp handles headers/cookies like a browser.
-            # We hook aria2c into it for multi-connection speed.
-            yt-dlp --no-check-certificate \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" \
-              --downloader aria2c \
-              --downloader-args "aria2c:-x 16 -s 16 -k 1M" \
-              -o "source.mkv" \
-              "$URL"
-            
+            echo "📥 Downloading Direct Link: $URL"
+            aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0" --console-log-level=warn --summary-interval=10 -o "source.mkv" "$URL"
             echo "$FN" > tg_fname.txt
           fi
 
