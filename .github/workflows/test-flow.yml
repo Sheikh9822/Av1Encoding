@@ -45,7 +45,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update -y
-        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu
+        sudo apt install -y ffmpeg mkvtoolnix wget mediainfo imagemagick fonts-dejavu bc
 
     - name: Download Source
       run: |
@@ -53,7 +53,7 @@ jobs:
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
              -O input.mkv "${{ github.event.inputs.source_url }}"
 
-    - name: Configure
+    - name: Configure Environment
       id: prep
       run: |
         # ── CUT ARGUMENTS ──────────────────────────────────────────────
@@ -79,13 +79,6 @@ jobs:
         echo "THREADS=$THREADS" >> $GITHUB_ENV
 
         # ── SVT-AV1 PARAMS ─────────────────────────────────────────────
-        # aq-mode=2:         variance AQ (best for flat anime areas)
-        # enable-overlays=1: improves fades in OP/ED
-        # scd=1:             scene change detection
-        # lookahead=60:      good balance, 120 has diminishing returns
-        # keyint=360:        fewer keyframes = better compression (~15s at 24fps)
-        # irefresh-type=2:   open GOP
-        # lp=N:              pin thread count to all available cores
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ github.event.inputs.film_grain }}"
         if [ "$GRAIN" -gt "0" ]; then
@@ -94,7 +87,6 @@ jobs:
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
         # ── VIDEO FILTER CHAIN ─────────────────────────────────────────
-        # Filters are opt-in only — nothing applied by default
         VFILTER=""
         if [ "${{ github.event.inputs.denoise }}" = "true" ]; then
           VFILTER="hqdn3d=1:1:3:3"
@@ -107,8 +99,6 @@ jobs:
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
 
         # ── ATTACHMENT HANDLING ────────────────────────────────────────
-        # Web sources: strip embedded fonts to save 5-15MB
-        # BD sources:  keep fonts so PGS/ASS subtitles render correctly
         ATTACH_ARG=""
         if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
           ATTACH_ARG="-map -0:t"
@@ -126,8 +116,7 @@ jobs:
         A_IDX=0
         S_IDX=0
 
-        ffprobe -v quiet \
-          -show_entries stream=codec_type,channels:stream_tags=language,title \
+        ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title \
           -of csv=p=0 input.mkv > streams.csv
 
         while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
@@ -142,17 +131,15 @@ jobs:
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
-              CLEAN_TITLE=$(echo "$TITLE" | \
-                sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | \
-                sed 's/  */ /g;s/^ *//;s/ *$//')
+              CLEAN_TITLE=$(echo "$TITLE" | sed -E 's/(5\.1|7\.1|6ch|8ch|channels?)//Ig' | sed 's/  */ /g;s/^ *//;s/ *$//')
               FINAL_AUDIO_TITLE="${CLEAN_TITLE:+$CLEAN_TITLE }Stereo"
-              [ -n "$LANG"  ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
               ;;
             subtitle)
               SPEC="s:$S_IDX"
-              [ -n "$LANG"  ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
               S_IDX=$((S_IDX + 1))
               ;;
@@ -163,6 +150,36 @@ jobs:
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
         printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
+
+    - name: Estimate AV1 Output Size
+      run: |
+        # Get video duration (seconds)
+        DURATION=$(ffprobe -v error -show_entries format=duration \
+          -of default=noprint_wrappers=1:nokey=1 input.mkv)
+        DURATION=${DURATION%.*}
+
+        # Get video bitrate in kbps (use video stream only)
+        VBPS=$(ffprobe -v error -select_streams v:0 \
+          -show_entries stream=bit_rate -of csv=p=0 input.mkv)
+        VBPS=${VBPS:-800000}  # fallback if not detected
+
+        # Convert to kbps
+        VBPS_KB=$((VBPS / 1000))
+
+        # Determine CRF factor -> compression estimate
+        CRF=${{ github.event.inputs.crf }}
+        if [ "$CRF" -le 32 ]; then
+          FACTOR=0.50
+        elif [ "$CRF" -le 37 ]; then
+          FACTOR=0.35
+        else
+          FACTOR=0.20
+        fi
+
+        # Estimated output video size (MB)
+        EST_SIZE_MB=$(echo "$VBPS_KB * $DURATION * $FACTOR / 8 / 1024" | bc)
+        echo "Estimated AV1 video size: ~${EST_SIZE_MB} MB"
+        echo "EST_SIZE_MB=$EST_SIZE_MB" >> $GITHUB_ENV
 
     - name: Extract Reference
       run: |
@@ -205,6 +222,9 @@ jobs:
 
     - name: Show Results
       run: |
+        echo "=== Estimated Output Size ==="
+        echo "~${EST_SIZE_MB} MB (based on CRF and source bitrate)"
+        echo ""
         echo "=== MediaInfo ==="
         mediainfo output.mkv
         echo ""
@@ -217,11 +237,11 @@ jobs:
         echo "Source : $(du -sh input.mkv  | cut -f1)"
         echo "Output : $(du -sh output.mkv | cut -f1)"
         echo "Ratio  : $(python3 -c "
-        import os
-        src = os.path.getsize('input.mkv')
-        out = os.path.getsize('output.mkv')
-        print(f'{out/src*100:.1f}% of source ({src//1024//1024}MB -> {out//1024//1024}MB)')
-        ")"
+import os
+src = os.path.getsize('input.mkv')
+out = os.path.getsize('output.mkv')
+print(f'{out/src*100:.1f}% of source ({src//1024//1024}MB -> {out//1024//1024}MB)')
+")"
 
     - name: Generate Comparison
       run: |
@@ -229,16 +249,16 @@ jobs:
         DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv \
           | python3 -c "import sys; print(int(float(sys.stdin.read().strip()) * 1000))")
         python3 -c "
-        import random
-        duration = $DUR_MS
-        if duration < 10000:
-            timestamps = [duration // 2]
-        else:
-            count = min(5, (duration - 4000) // 2000)
-            timestamps = sorted(random.sample(range(2000, duration - 2000), count))
-        for t in timestamps:
-            print(f'{t//3600000:02d}:{(t%3600000)//60000:02d}:{(t%60000)//1000:02d}.{t%1000:03d}')
-        " > timestamps.txt
+import random
+duration = $DUR_MS
+if duration < 10000:
+    timestamps = [duration // 2]
+else:
+    count = min(5, (duration - 4000) // 2000)
+    timestamps = sorted(random.sample(range(2000, duration - 2000), count))
+for t in timestamps:
+    print(f'{t//3600000:02d}:{(t%3600000)//60000:02d}:{(t%60000)//1000:02d}.{t%1000:03d}')
+" > timestamps.txt
 
         i=1
         while read -r T; do
