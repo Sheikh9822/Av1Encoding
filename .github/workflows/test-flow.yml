@@ -1,4 +1,4 @@
-name: AV1 Ultimate (Fixed Dependencies & Enhanced)
+name: AV1 Ultimate (Fixed Dependencies)
 
 on:
   workflow_dispatch:
@@ -12,12 +12,15 @@ on:
       preset:
         description: "Preset (6 = Balanced, 4 = Best Quality/Slow)"
         default: "6"
+      tune:
+        description: "Tune (0 = Visual Quality/Subjective, 1 = PSNR)"
+        default: "0"
+      audio_bitrate:
+        description: "Audio Bitrate (64k, 96k, 128k, 160k)"
+        default: "128k"
       max_bitrate:
         description: "Safety Maxrate (0 = off, e.g. 800k)"
         default: "800k"
-      audio_bitrate:
-        description: "Opus Audio Bitrate (e.g., 64k, 96k, 128k)"
-        default: "96k"
       film_grain:
         description: "Film Grain Synthesis (0-50). Use 4-8 for grainy sources."
         default: "0"
@@ -45,7 +48,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. Cache FFmpeg (SVT-AV1 is included in this static build)
+    # 1. Cache FFmpeg
     - name: Cache Tools
       id: cache-tools
       uses: actions/cache@v4
@@ -60,7 +63,7 @@ jobs:
         wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
         tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
         rm ffmpeg-master-latest-linux64-gpl.tar.xz
-        
+
     # 2. Install Dependencies
     - name: Install Dependencies
       run: |
@@ -82,13 +85,13 @@ jobs:
         START="${{ github.event.inputs.sample_start }}"
         DURATION="${{ github.event.inputs.sample_duration }}"
         CUT_ARGS=""
-        if; then CUT_ARGS="-ss $START"; fi
-        if; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
+        if [ "$START" != "0" ]; then CUT_ARGS="-ss $START"; fi
+        if [ "$DURATION" != "0" ]; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
         
         # --- BITRATE ---
         MAXRATE="${{ github.event.inputs.max_bitrate }}"
-        if ||; then
+        if [ "$MAXRATE" = "0" ] || [ -z "$MAXRATE" ]; then
           echo "RATE_ARGS=" >> $GITHUB_ENV
         else
           BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
@@ -96,73 +99,91 @@ jobs:
           echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
         fi
         
-        # --- PARAMS ---
+        # --- PARAMS (Added Tune) ---
         THREADS=$(nproc)
         echo "THREADS=$THREADS" >> $GITHUB_ENV
         
-        # Added tune=0 for general objective enhancement
-        PARAMS="aq-mode=2:tune=0:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
+        # Base Params
+        PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
+        
+        # Apply Tuning
+        TUNE="${{ github.event.inputs.tune }}"
+        PARAMS="$PARAMS:tune=$TUNE"
+        
+        # Apply Grain
         GRAIN="${{ github.event.inputs.film_grain }}"
-        if; then
+        if [ "$GRAIN" -gt "0" ]; then
           PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
         fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
         
         # --- FILTERS ---
         VFILTER=""
-        if; then VFILTER="hqdn3d=1:1:3:3"; fi
-        if; then && VFILTER="$VFILTER,"
+        if [ "${{ github.event.inputs.denoise }}" = "true" ]; then VFILTER="hqdn3d=1:1:3:3"; fi
+        if [ "${{ github.event.inputs.deband }}" = "true" ]; then
+          [ -n "$VFILTER" ] && VFILTER="$VFILTER,"
           VFILTER="${VFILTER}gradfun=1.5:16"
-        fi && VFILTER="null"
+        fi
+        [ -z "$VFILTER" ] && VFILTER="null"
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
         
         # --- ATTACHMENTS ---
         ATTACH_ARG=""
-        if; then
+        if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
           ATTACH_ARG="-map -0:t"
         fi
         echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
         
-        # --- METADATA ---
+        # --- METADATA (Fixed Parsing) ---
         METADATA_FLAGS=()
-        GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1) && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
+        GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
+        [ -n "$GLOBAL_TITLE" ] && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
         
         AUDIO_MAP=""
         AUDIO_FILTER=""
         A_IDX=0
         S_IDX=0
         
-        ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title -of csv=p=0 input.mkv > streams.csv
-        while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
+        # Use pipe (|) as separator to handle commas in titles correctly
+        ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title -of csv=p=0:s="|" input.mkv > streams.csv
+        
+        while IFS='|' read -r TYPE CHANNELS LANG TITLE; do
+          # Strip quotes if they exist (Fix for "Double Quote" issues)
+          TITLE="${TITLE%\"}"
+          TITLE="${TITLE#\"}"
           
-          # Fix: ffprobe wraps CSV fields containing commas in quotes. Strip leading/trailing quotes.
-          CLEAN_TITLE="${TITLE%\"}"
-          CLEAN_TITLE="${CLEAN_TITLE#\"}"
-
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
-              if; then
-                AUDIO_FILTER+="aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE;"
-                AUDIO_MAP+="-map "
+              if [ "${CHANNELS:-0}" -gt 2 ]; then
+                # Downmix 5.1 to Stereo
+                AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$A_IDX];"
+                AUDIO_MAP+="-map [a$A_IDX] "
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
               
-              FINAL_AUDIO_TITLE="Stereo" && FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo" && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              CLEAN_TITLE="$TITLE"
+              FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo"
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
               ;;
             subtitle)
-              SPEC="s:$S_IDX" && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG") && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$CLEAN_TITLE")
+              SPEC="s:$S_IDX"
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
               S_IDX=$((S_IDX + 1))
               ;;
           esac
-        done < streams.csv && AUDIO_FILTER="${AUDIO_FILTER%;}"
+        done < streams.csv
         
+        [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
+        
+        # Save array to binary file to preserve spaces in arguments
+        printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
 
     - name: Extract Reference
       run: |
@@ -175,13 +196,14 @@ jobs:
       shell: bash
       run: |
         METADATA_ARGS=()
-        if; then
+        if [ -f metadata_flags.bin ]; then
           while IFS= read -r -d '' flag; do
             METADATA_ARGS+=("$flag")
           done < metadata_flags.bin
         fi
         
-        F_ARGS=() && F_ARGS=(-filter_complex "$AUDIO_FILTER")
+        F_ARGS=()
+        [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
         
         ffmpeg -hide_banner -y \
           -probesize 50M -analyzeduration 50M \
@@ -192,8 +214,8 @@ jobs:
           $ATTACH_ARG \
           -map_metadata 0 \
           -map_metadata:s -1 \
-          "${METADATA_ARGS}" \
-          "${F_ARGS}" \
+          "${METADATA_ARGS[@]}" \
+          "${F_ARGS[@]}" \
           -vf "$VFILTER" \
           -c:v libsvtav1 \
           -pix_fmt yuv420p10le \
@@ -223,7 +245,7 @@ jobs:
         import random
         d = $DUR_MS
         if d < 10000:
-            ts =
+            ts = [d // 2]
         else:
             c = min(5, (d - 4000) // 2000)
             ts = sorted(random.sample(range(2000, d - 2000), c))
@@ -238,7 +260,7 @@ jobs:
           
           convert \
             \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
-            \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
+            \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }} | Tune ${{ github.event.inputs.tune }}" \) \
             +append "screenshots/compare_$i.jpg"
           
           i=$((i + 1))
