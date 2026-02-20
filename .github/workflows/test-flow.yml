@@ -1,4 +1,23 @@
-name: AV1 Ultimate (Fast Cache & Full Metadata)
+Skip to content
+Sheikh9822
+Av1Encoding
+Repository navigation
+Code
+Issues
+Pull requests
+Actions
+Projects
+Wiki
+Security
+Insights
+Settings
+AV1 Ultimate (Fixed Dependencies)
+AV1 Ultimate (Fast Cache & Full Metadata) #69
+All jobs
+Run details
+Workflow file for this run
+.github/workflows/test-flow.yml at 80b41e8
+name: AV1 Ultimate (Fixed Dependencies)
 
 on:
   workflow_dispatch:
@@ -50,7 +69,6 @@ jobs:
         path: tools
         key: ${{ runner.os }}-ffmpeg-static-v1
 
-    # 2. Download FFmpeg ONLY if it wasn't cached
     - name: Download FFmpeg (Static)
       if: steps.cache-tools.outputs.cache-hit != 'true'
       run: |
@@ -58,22 +76,18 @@ jobs:
         wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
         tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
         rm ffmpeg-master-latest-linux64-gpl.tar.xz
-
-    # 3. Install required OS Dependencies (Imagemagick included for 'convert')
+    # 2. Install Dependencies (ADDED imagemagick back)
     - name: Install Dependencies
       run: |
         echo "$(pwd)/tools/bin" >> $GITHUB_PATH
         sudo apt-get update -y
+        # Added imagemagick back so 'convert' works
         sudo apt-get install -y --no-install-recommends mediainfo imagemagick fonts-dejavu
-
-    # 4. Download Source Video
     - name: Download Source
       run: |
         wget --header="Referer: https://kwik.cx/" \
              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
              -O input.mkv "${{ github.event.inputs.source_url }}"
-
-    # 5. Build Environment Variables & Metadata Mapping
     - name: Configure Environment
       id: prep
       shell: bash
@@ -82,133 +96,97 @@ jobs:
         START="${{ github.event.inputs.sample_start }}"
         DURATION="${{ github.event.inputs.sample_duration }}"
         CUT_ARGS=""
-        if &&; then CUT_ARGS="-ss $START"; fi
-        if &&; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
+        if [ "$START" != "0" ]; then CUT_ARGS="-ss $START"; fi
+        if [ "$DURATION" != "0" ]; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
-
         # --- BITRATE ---
         MAXRATE="${{ github.event.inputs.max_bitrate }}"
-        if ||; then
+        if [ "$MAXRATE" = "0" ] || [ -z "$MAXRATE" ]; then
           echo "RATE_ARGS=" >> $GITHUB_ENV
         else
           BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
           BUF_VAL=$(( BITRATE_VAL * 4 ))
           echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
         fi
-
         # --- PARAMS ---
         THREADS=$(nproc)
         echo "THREADS=$THREADS" >> $GITHUB_ENV
         
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ github.event.inputs.film_grain }}"
-        if &&; then
+        if [ "$GRAIN" -gt "0" ]; then
           PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
         fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
-
         # --- FILTERS ---
-        DENOISE="${{ github.event.inputs.denoise }}"
-        DEBAND="${{ github.event.inputs.deband }}"
         VFILTER=""
-        if; then VFILTER="hqdn3d=1:1:3:3"; fi
-        if; then
-          if; then VFILTER="$VFILTER,"; fi
+        if [ "${{ github.event.inputs.denoise }}" = "true" ]; then VFILTER="hqdn3d=1:1:3:3"; fi
+        if [ "${{ github.event.inputs.deband }}" = "true" ]; then
+          [ -n "$VFILTER" ] && VFILTER="$VFILTER,"
           VFILTER="${VFILTER}gradfun=1.5:16"
         fi
-        if; then VFILTER="null"; fi
+        [ -z "$VFILTER" ] && VFILTER="null"
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
-
         # --- ATTACHMENTS ---
-        STRIP="${{ github.event.inputs.strip_attachments }}"
         ATTACH_ARG=""
-        if; then
+        if [ "${{ github.event.inputs.strip_attachments }}" = "true" ]; then
           ATTACH_ARG="-map -0:t"
         fi
         echo "ATTACH_ARG=$ATTACH_ARG" >> $GITHUB_ENV
-
-        # --- METADATA EXTRACTION ---
+        # --- METADATA ---
         METADATA_FLAGS=()
         GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
-        if; then
-          METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
-        fi
-
+        [ -n "$GLOBAL_TITLE" ] && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
         AUDIO_MAP=""
         AUDIO_FILTER=""
         A_IDX=0
         S_IDX=0
-
         ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title -of csv=p=0 input.mkv > streams.csv
-
         while IFS=',' read -r TYPE CHANNELS LANG TITLE; do
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
-              if+$ ]] &&; then
-                AUDIO_FILTER+="aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE;"
-                AUDIO_MAP+="-map "
+              if [ "${CHANNELS:-0}" -gt 2 ]; then
+                AUDIO_FILTER+="[0:a:$A_IDX]aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE[a$A_IDX];"
+                AUDIO_MAP+="-map [a$A_IDX] "
               else
                 AUDIO_MAP+="-map 0:a:$A_IDX "
               fi
-              
-              # Safe Title handling
               CLEAN_TITLE="$TITLE"
               FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo"
-              if; then
-                METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-              fi
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
               ;;
             subtitle)
               SPEC="s:$S_IDX"
-              if; then
-                METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-              fi
-              if; then
-                METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
-              fi
+              [ -n "$LANG" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              [ -n "$TITLE" ] && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
               S_IDX=$((S_IDX + 1))
               ;;
           esac
         done < streams.csv
-        
-        AUDIO_FILTER="${AUDIO_FILTER%;}"
+        [ -n "$AUDIO_FILTER" ] && AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
-        
-        # Save metadata flags safely to avoid spacing syntax errors
-        if} -gt 0 ]; then
-          printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
-        else
-          touch metadata_flags.bin
-        fi
-
-    # 6. Extract Reference for Accurate Screenshots (Lossless H264)
+        printf "%s\0" "${METADATA_FLAGS[@]}" > metadata_flags.bin
     - name: Extract Reference
       run: |
         ffmpeg -hide_banner -y \
           -probesize 50M -analyzeduration 50M \
           $CUT_ARGS -i input.mkv \
           -map 0:v:0 -c:v libx264 -qp 0 -preset ultrafast reference.mkv
-
-    # 7. Main Encode
     - name: Run AV1 Encode
       shell: bash
       run: |
         METADATA_ARGS=()
-        if; then
+        if [ -f metadata_flags.bin ]; then
           while IFS= read -r -d '' flag; do
             METADATA_ARGS+=("$flag")
           done < metadata_flags.bin
         fi
-
         F_ARGS=()
-        if; then
-          F_ARGS=("-filter_complex" "$AUDIO_FILTER")
-        fi
-
+        [ -n "$AUDIO_FILTER" ] && F_ARGS=(-filter_complex "$AUDIO_FILTER")
         ffmpeg -hide_banner -y \
           -probesize 50M -analyzeduration 50M \
           $CUT_ARGS -i input.mkv \
@@ -218,8 +196,8 @@ jobs:
           $ATTACH_ARG \
           -map_metadata 0 \
           -map_metadata:s -1 \
-          "${METADATA_ARGS}" \
-          "${F_ARGS}" \
+          "${METADATA_ARGS[@]}" \
+          "${F_ARGS[@]}" \
           -vf "$VFILTER" \
           -c:v libsvtav1 \
           -pix_fmt yuv420p10le \
@@ -230,63 +208,43 @@ jobs:
           -c:a libopus -b:a 64k -ac 2 \
           -c:s copy \
           output.mkv
-
-    # 8. Print Results
     - name: Show Results
       run: |
         echo "=== MediaInfo ==="
         mediainfo output.mkv | head -n 20
         echo ""
         echo "=== File Sizes ==="
-        SIZE_SRC=$(du -sh input.mkv | cut -f1)
-        SIZE_OUT=$(du -sh output.mkv | cut -f1)
-        echo "Source : $SIZE_SRC"
-        echo "Output : $SIZE_OUT"
-        
-        # Calculate compression ratio safely
-        python3 -c "
-        import os
-        try:
-            src = os.path.getsize('input.mkv')
-            out = os.path.getsize('output.mkv')
-            print(f'Ratio  : {out/src*100:.1f}% of original size')
-        except:
-            pass
-        "
-
-    # 9. Build Screenshots
+        du -sh input.mkv
+        du -sh output.mkv
     - name: Generate Comparison
       run: |
         mkdir -p screenshots
-        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; t=sys.stdin.read().strip(); print(int(float(t)*1000) if t else 0)" || echo 0)
+        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
         
         python3 -c "
         import random
         d = $DUR_MS
         if d < 10000:
-            ts = if d > 0 else
+            ts = [d // 2]
         else:
             c = min(5, (d - 4000) // 2000)
             ts = sorted(random.sample(range(2000, d - 2000), c))
         for t in ts:
             print(t/1000.0)
         " > timestamps.txt
-
         i=1
         while read -r T; do
           ffmpeg -nostdin -ss "$T" -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss "$T" -i output.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
-          # Imagemagick stitches the two images together with text
+          # Convert now works because imagemagick is installed
           convert \
-            \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T sec" \) \
+            \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T" \) \
             \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ github.event.inputs.crf }}" \) \
             +append "screenshots/compare_$i.jpg"
           
           i=$((i + 1))
         done < timestamps.txt
-
-    # 10. Upload Final Build 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
