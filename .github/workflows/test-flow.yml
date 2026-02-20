@@ -75,7 +75,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. Cache FFmpeg (SVT-AV1 and libvmaf are included in this static build)
+    # 1. Cache FFmpeg
     - name: Cache Tools
       id: cache-tools
       uses: actions/cache@v4
@@ -83,7 +83,7 @@ jobs:
         path: tools
         key: ${{ runner.os }}-ffmpeg-static-v2
 
-    # 2. Download FFmpeg ONLY if it wasn't cached
+    # 2. Download FFmpeg
     - name: Download FFmpeg (Static)
       if: steps.cache-tools.outputs.cache-hit != 'true'
       run: |
@@ -92,7 +92,7 @@ jobs:
         tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz -C tools --strip-components=1
         rm ffmpeg-master-latest-linux64-gpl.tar.xz
 
-    # 3. Install required OS Dependencies (Imagemagick, yt-dlp)
+    # 3. OS Dependencies
     - name: Install Dependencies
       run: |
         echo "$(pwd)/tools/bin" >> $GITHUB_PATH
@@ -100,10 +100,10 @@ jobs:
         sudo apt-get install -y --no-install-recommends mediainfo imagemagick fonts-dejavu python3 python3-pip
         sudo pip3 install --break-system-packages yt-dlp || sudo pip3 install yt-dlp
 
-    # 4. Download Source Video flexibly using wget or yt-dlp
+    # 4. Download Source
     - name: Download Source
       run: |
-        if []; then
+        if; then
           yt-dlp --merge-output-format mkv -o "input.%(ext)s" "${{ inputs.source_url }}"
           mv input.* input.mkv 2>/dev/null || true
         else
@@ -121,22 +121,18 @@ jobs:
         START="${{ inputs.sample_start }}"
         DURATION="${{ inputs.sample_duration }}"
         CUT_ARGS=""
-        if] && []; then
-          CUT_ARGS="-ss $START"
-        fi
-        if [] &&]; then
-          CUT_ARGS="$CUT_ARGS -t $DURATION"
-        fi
+        if &&; then CUT_ARGS="-ss $START"; fi
+        if &&; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
 
         # --- BITRATE ---
         MAXRATE="${{ inputs.max_bitrate }}"
-        if [] ||]; then
+        if ||; then
           echo "RATE_ARGS=" >> $GITHUB_ENV
         else
           BITRATE_VAL=$(echo "$MAXRATE" | tr -dc '0-9')
           BUF_VAL=$(( BITRATE_VAL * 4 ))
-          echo "RATE_ARGS=-maxrate ${BITRATE_VAL}k -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
+          echo "RATE_ARGS=-maxrate $MAXRATE -bufsize ${BUF_VAL}k" >> $GITHUB_ENV
         fi
 
         # --- PARAMS ---
@@ -145,31 +141,25 @@ jobs:
         
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ inputs.film_grain }}"
-        if]; then
+        if; then
           PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
         fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
         # --- FILTERS ---
         VFILTER_ARR=()
-        if]; then
-          VFILTER_ARR+=("hqdn3d=1:1:3:3")
-        fi
-        if []; then
-          VFILTER_ARR+=("gradfun=1.5:16")
-        fi
-        if]; then
+        if; then VFILTER_ARR+=("hqdn3d=1:1:3:3"); fi
+        if; then VFILTER_ARR+=("gradfun=1.5:16"); fi
+        if; then
           VFILTER_ARR+=("scale=-2:${{ inputs.resolution }}:flags=lanczos")
         fi
         
         VFILTER=$(IFS=,; echo "${VFILTER_ARR}")
-        if []; then
-          VFILTER="null"
-        fi
+        if; then VFILTER="null"; fi
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
 
         # --- ATTACHMENTS ---
-        if []; then
+        if; then
           echo "ATTACH_ARG=-map -0:t?" >> $GITHUB_ENV
         else
           echo "ATTACH_ARG=" >> $GITHUB_ENV
@@ -177,44 +167,54 @@ jobs:
 
         # --- METADATA EXTRACTION ---
         METADATA_FLAGS=()
+        AUDIO_MAP_ARGS=()
+        AUDIO_FILTER_ARR=()
         A_IDX=0
         S_IDX=0
 
         GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1 || true)
-        if]; then
-          METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
-        fi
+        if; then METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE"); fi
 
         ffprobe -v quiet -show_entries stream=codec_type,channels:stream_tags=language,title -of csv=p=0 input.mkv > streams.csv
 
-        while IFS=',' read -r TYPE CHANNELS LANG TITLE ||]; do
+        while IFS=',' read -r TYPE CHANNELS LANG TITLE ||; do
           TYPE=$(echo "$TYPE" | tr -d '\r\n')
+          CHANNELS=$(echo "$CHANNELS" | tr -d '\r\n')
           LANG=$(echo "$LANG" | tr -d '\r\n')
           TITLE=$(echo "$TITLE" | tr -d '\r\n')
 
-          if []; then
+          if; then
             SPEC="a:$A_IDX"
-            if []; then
-              METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-            fi
-            if]; then
-              METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
+            if; then
+              AUDIO_MAP_ARGS+=("-map" "0:$SPEC")
+            else
+              # Handle Stereo Downmix for Surround formats
+              if &&; then
+                AUDIO_FILTER_ARR+=("aformat=channel_layouts='stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE")
+                AUDIO_MAP_ARGS+=("-map" "0:$SPEC")
+                FINAL_AUDIO_TITLE="${TITLE} (Stereo Downmix)"
+              else
+                AUDIO_MAP_ARGS+=("-map" "0:$SPEC")
+                FINAL_AUDIO_TITLE="$TITLE"
+              fi
+              if; then METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG"); fi
+              if; then METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE"); fi
             fi
             A_IDX=$((A_IDX + 1))
-          elif]; then
+          elif; then
             SPEC="s:$S_IDX"
-            if]; then
-              METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
-            fi
-            if]; then
-              METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
-            fi
+            if; then METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG"); fi
+            if; then METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE"); fi
             S_IDX=$((S_IDX + 1))
           fi
         done < streams.csv
-        
-        # Save metadata array dynamically 
+
+        # Save metadata and arrays properly for the next step 
         printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
+        printf "%s\0" "${AUDIO_MAP_ARGS}" > audio_map.bin
+        
+        AUDIO_FILTER=$(IFS=';'; echo "${AUDIO_FILTER_ARR}")
+        echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
 
     # 6. Extract Reference for Accurate Screenshots (Lossless H264)
     - name: Extract Reference
@@ -228,22 +228,25 @@ jobs:
     - name: Run AV1 Encode
       shell: bash
       run: |
-        # Load arrays from binaries to protect spacing
         METADATA_ARGS=()
-        if]; then
-          while IFS= read -r -d '' flag; do
-            if]; then
-              METADATA_ARGS+=("$flag")
-            fi
-          done < metadata_flags.bin
+        if; then
+          while IFS= read -r -d '' flag; do METADATA_ARGS+=("$flag"); done < metadata_flags.bin
         fi
 
-        # Audio Codec Logic
+        AUDIO_MAP=()
+        if; then
+          while IFS= read -r -d '' maparg; do AUDIO_MAP+=("$maparg"); done < audio_map.bin
+        fi
+
+        F_ARGS=()
+        if; then
+          F_ARGS=("-filter_complex" "$AUDIO_FILTER")
+        fi
+        
         ACODEC_ARGS=()
-        if []; then
+        if; then
           ACODEC_ARGS=("-c:a" "copy")
         else
-          # Passing -ac 2 will intrinsically trigger FFmpeg's built-in stereo downmixer safely
           ACODEC_ARGS=("-c:a" "${{ inputs.audio_codec }}" "-b:a" "${{ inputs.audio_bitrate }}" "-ac" "2")
         fi
 
@@ -251,12 +254,13 @@ jobs:
           -probesize 50M -analyzeduration 50M \
           $CUT_ARGS -i input.mkv \
           -map 0:v:0 \
-          -map 0:a? \
+          "${AUDIO_MAP}" \
           -map 0:s? \
           $ATTACH_ARG \
           -map_metadata 0 \
           -map_metadata:s -1 \
           "${METADATA_ARGS}" \
+          "${F_ARGS}" \
           -vf "$VFILTER" \
           -c:v libsvtav1 \
           -pix_fmt yuv420p10le \
@@ -286,11 +290,10 @@ jobs:
         try:
             src = os.path.getsize('input.mkv')
             out = os.path.getsize('output.mkv')
-            if src > 0:
-                print(f'Ratio  : {out/src*100:.1f}% of original size')
-                print(f'Saved  : {(src-out)/1048576:.1f} MB')
-        except Exception as e:
-            print('Error calculating ratios:', e)
+            print(f'Ratio  : {out/src*100:.1f}% of original size')
+            print(f'Saved  : {(src-out)/1048576:.1f} MB')
+        except:
+            pass
         "
 
     # 9. VMAF Score Generation (Optional)
@@ -302,16 +305,15 @@ jobs:
           -lavfi "scale=1920:1080:flags=bicubic,setpts=PTS-STARTPTS;scale=1920:1080:flags=bicubic,setpts=PTS-STARTPTS;libvmaf=n_threads=$(nproc):log_fmt=json:log_path=vmaf.json" \
           -f null - || true
         
-        if]; then
+        if; then
           VMAF_SCORE=$(python3 -c "
           import json
           try:
-              with open('vmaf.json') as f:
-                  d = json.load(f)
-                  score = d.get('VMAF score', d.get('pooled_metrics', {}).get('vmaf', {}).get('mean', 'N/A'))
-                  print(round(score, 2) if isinstance(score, (int, float)) else score)
-          except Exception as e:
-              print('Error:', e)
+              d = json.load(open('vmaf.json'))
+              score = d.get('VMAF score', d.get('pooled_metrics', {}).get('vmaf', {}).get('mean', 'N/A'))
+              print(round(score, 2))
+          except:
+              print('Error')
           ")
           echo "Final VMAF Score: $VMAF_SCORE"
         fi
@@ -329,18 +331,16 @@ jobs:
             ts = if d > 2000 else
         else:
             c = min(5, (d - 4000) // 2000)
-            ts =
-        for t in ts:
-            print(t)
+            ts = sorted()
+        for t in ts: print(t)
         " > timestamps.txt
 
         i=1
         while read -r T; do
-          if]; then continue; fi
           ffmpeg -nostdin -ss "$T" -i reference.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/src_$i.png" -y 2>/dev/null
           ffmpeg -nostdin -ss "$T" -i output.mkv -frames:v 1 -vf "scale=960:-1" -q:v 2 "screenshots/enc_$i.png" -y 2>/dev/null
           
-          if [] &&]; then
+          if &&; then
             convert \
               \( "screenshots/src_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "SOURCE | $T sec" \) \
               \( "screenshots/enc_$i.png" -gravity North -background '#00000099' -splice 0x30 -fill white -font DejaVu-Sans -pointsize 20 -annotate +0+6 "AV1 | CRF ${{ inputs.crf }} | Preset ${{ inputs.preset }}" \) \
