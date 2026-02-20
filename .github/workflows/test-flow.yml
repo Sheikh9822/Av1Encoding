@@ -82,8 +82,8 @@ jobs:
         START="${{ github.event.inputs.sample_start }}"
         DURATION="${{ github.event.inputs.sample_duration }}"
         CUT_ARGS=""
-        if; then CUT_ARGS="-ss $START"; fi
-        if; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
+        if &&; then CUT_ARGS="-ss $START"; fi
+        if &&; then CUT_ARGS="$CUT_ARGS -t $DURATION"; fi
         echo "CUT_ARGS=$CUT_ARGS" >> $GITHUB_ENV
 
         # --- BITRATE ---
@@ -102,20 +102,25 @@ jobs:
         
         PARAMS="aq-mode=2:enable-overlays=1:scd=1:lookahead=60:keyint=360:irefresh-type=2:lp=$THREADS"
         GRAIN="${{ github.event.inputs.film_grain }}"
-        if; then
+        if &&; then
           PARAMS="$PARAMS:film-grain=$GRAIN:film-grain-denoise=1"
         fi
         echo "SVT_PARAMS=$PARAMS" >> $GITHUB_ENV
 
         # --- FILTERS ---
+        DENOISE="${{ github.event.inputs.denoise }}"
+        DEBAND="${{ github.event.inputs.deband }}"
         VFILTER=""
         if; then VFILTER="hqdn3d=1:1:3:3"; fi
-        if; then && VFILTER="$VFILTER,"
+        if; then
+          if; then VFILTER="$VFILTER,"; fi
           VFILTER="${VFILTER}gradfun=1.5:16"
-        fi && VFILTER="null"
+        fi
+        if; then VFILTER="null"; fi
         echo "VFILTER=$VFILTER" >> $GITHUB_ENV
 
         # --- ATTACHMENTS ---
+        STRIP="${{ github.event.inputs.strip_attachments }}"
         ATTACH_ARG=""
         if; then
           ATTACH_ARG="-map -0:t"
@@ -124,7 +129,10 @@ jobs:
 
         # --- METADATA EXTRACTION ---
         METADATA_FLAGS=()
-        GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1) && METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
+        GLOBAL_TITLE=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 input.mkv | head -n 1)
+        if; then
+          METADATA_FLAGS+=("-metadata" "title=$GLOBAL_TITLE")
+        fi
 
         AUDIO_MAP=""
         AUDIO_FILTER=""
@@ -137,7 +145,7 @@ jobs:
           case "$TYPE" in
             audio)
               SPEC="a:$A_IDX"
-              if; then
+              if+$ ]] &&; then
                 AUDIO_FILTER+="aformat=channel_layouts='5.1|stereo|mono',pan=stereo|FL=FC+0.30*FL+0.30*BL+0.21*LFE|FR=FC+0.30*FR+0.30*BR+0.21*LFE;"
                 AUDIO_MAP+="-map "
               else
@@ -146,21 +154,36 @@ jobs:
               
               # Safe Title handling
               CLEAN_TITLE="$TITLE"
-              FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo" && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              FINAL_AUDIO_TITLE="${CLEAN_TITLE} Stereo"
+              if; then
+                METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              fi
               METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$FINAL_AUDIO_TITLE")
               A_IDX=$((A_IDX + 1))
               ;;
             subtitle)
-              SPEC="s:$S_IDX" && METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG") && METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
+              SPEC="s:$S_IDX"
+              if; then
+                METADATA_FLAGS+=("-metadata:s:$SPEC" "language=$LANG")
+              fi
+              if; then
+                METADATA_FLAGS+=("-metadata:s:$SPEC" "title=$TITLE")
+              fi
               S_IDX=$((S_IDX + 1))
               ;;
           esac
-        done < streams.csv && AUDIO_FILTER="${AUDIO_FILTER%;}"
+        done < streams.csv
+        
+        AUDIO_FILTER="${AUDIO_FILTER%;}"
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
         
         # Save metadata flags safely to avoid spacing syntax errors
-        printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
+        if} -gt 0 ]; then
+          printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
+        else
+          touch metadata_flags.bin
+        fi
 
     # 6. Extract Reference for Accurate Screenshots (Lossless H264)
     - name: Extract Reference
@@ -181,7 +204,10 @@ jobs:
           done < metadata_flags.bin
         fi
 
-        F_ARGS=() && F_ARGS=(-filter_complex "$AUDIO_FILTER")
+        F_ARGS=()
+        if; then
+          F_ARGS=("-filter_complex" "$AUDIO_FILTER")
+        fi
 
         ffmpeg -hide_banner -y \
           -probesize 50M -analyzeduration 50M \
@@ -232,13 +258,13 @@ jobs:
     - name: Generate Comparison
       run: |
         mkdir -p screenshots
-        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; print(int(float(sys.stdin.read().strip())*1000))")
+        DUR_MS=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 output.mkv | python3 -c "import sys; t=sys.stdin.read().strip(); print(int(float(t)*1000) if t else 0)" || echo 0)
         
         python3 -c "
         import random
         d = $DUR_MS
         if d < 10000:
-            ts =
+            ts = if d > 0 else
         else:
             c = min(5, (d - 4000) // 2000)
             ts = sorted(random.sample(range(2000, d - 2000), c))
