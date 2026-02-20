@@ -159,6 +159,7 @@ jobs:
               ;;
           esac
         done < streams.csv && AUDIO_FILTER="${AUDIO_FILTER%;}"
+        
         echo "AUDIO_MAP=$AUDIO_MAP" >> $GITHUB_ENV
         echo "AUDIO_FILTER=$AUDIO_FILTER" >> $GITHUB_ENV
         printf "%s\0" "${METADATA_FLAGS}" > metadata_flags.bin
@@ -179,6 +180,7 @@ jobs:
             METADATA_ARGS+=("$flag")
           done < metadata_flags.bin
         fi
+        
         F_ARGS=() && F_ARGS=(-filter_complex "$AUDIO_FILTER")
         
         ffmpeg -hide_banner -y \
