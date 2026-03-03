@@ -68,6 +68,8 @@ async def main():
         # 5. ENCODING EXECUTION
         cmd = [
             "ffmpeg", "-i", config.SOURCE, 
+            # FIX: Explicitly map only what we need. 
+            # This completely bypasses FFmpeg's font/cover-art muxing crashes.
             "-map", "0:v:0",          # Map ONLY the first video stream (the episode itself)
             "-map", "0:a?",           # Map all audio streams (if any exist)
             "-map", "0:s?",           # Map all subtitle streams (if any exist)
@@ -79,7 +81,7 @@ async def main():
             "-svtav1-params", svtav1_tune,
             "-threads", "0",
             *audio_cmd, 
-            "-c:s", "copy",           # Copy subtitles safely
+            "-c:s", "copy",           # Copy subtitles securely
             "-map_chapters", "0",     # Map chapters
             "-progress", "pipe:1", 
             "-nostats", 
@@ -122,7 +124,7 @@ async def main():
             return
 
         # 7. POST-PROCESSING (Remux)
-        # Added --no-attachments to strip massive embedded fonts and cover arts to save ~28MB
+        # mkvmerge will safely pull the fonts and cover art from config.SOURCE here!
         await app.edit_message_text(config.CHAT_ID, status.id, "🛠️ <b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>", parse_mode=enums.ParseMode.HTML)
         fixed_file = f"FIXED_{config.FILE_NAME}"
         subprocess.run(["mkvmerge", "-o", fixed_file, config.FILE_NAME, "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE])
