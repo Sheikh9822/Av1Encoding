@@ -8,7 +8,7 @@ from pyrogram import enums
 from pyrogram.errors import FloodWait
 
 import config
-from ui import get_vmaf_ui, sync_progress
+from ui import get_vmaf_ui
 
 def get_video_info():
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", config.SOURCE]
@@ -98,17 +98,15 @@ async def get_vmaf(output_file, crop_val, width, height, duration, fps, app, cha
                         curr_frame = int(line_str.split("=")[1].strip())
                         percent = min(100, (curr_frame / total_vmaf_frames) * 100)
                         now = time.time()
-                        
-                        # Sync every 5 seconds
                         if now - last_update > 5:
                             elapsed = now - start_time
                             speed = curr_frame / elapsed if elapsed > 0 else 0
                             eta = (total_vmaf_frames - curr_frame) / speed if speed > 0 else 0
                             ui_text = get_vmaf_ui(percent, speed, eta)
-                            
-                            # SILENT SYNC TO CLOUDFLARE
-                            sync_progress(ui_text)
-                            last_update = now
+                            try:
+                                await app.edit_message_text(chat_id, status_msg.id, ui_text, parse_mode=enums.ParseMode.HTML)
+                                last_update = now
+                            except: pass
                     except: pass
 
         async def read_stderr():

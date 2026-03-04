@@ -1,21 +1,10 @@
 import time
 from datetime import timedelta
-import os
-import urllib.request
+import asyncio
 from pyrogram import enums
+from pyrogram.errors import FloodWait
 
-WORKER_URL = os.environ.get("WORKER_URL", "").strip()
 last_up_update = 0
-
-def sync_progress(ui_text):
-    """Silently syncs progress to Cloudflare Worker KV via POST request."""
-    if not WORKER_URL: 
-        return
-    try:
-        req = urllib.request.Request(f"{WORKER_URL.rstrip('/')}/sync", data=ui_text.encode('utf-8'), method="POST")
-        urllib.request.urlopen(req, timeout=2)
-    except Exception:
-        pass  # Ignore network drops, next update will catch up
 
 def generate_progress_bar(percentage):
     total_segments = 15
@@ -37,7 +26,6 @@ def get_vmaf_ui(percent, speed, eta):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
-
 def get_download_fail_ui(error_msg):
     return (
         f"<code>┌─── ❌ [ DOWNLOAD.MISSION.FAILED ] ───┐\n"
@@ -47,7 +35,6 @@ def get_download_fail_ui(error_msg):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
-
 def get_failure_ui(file_name, error_snippet):
     return (
         f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
@@ -118,6 +105,10 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
         f"└────────────────────────────────────┘</code>"
     )
     
-    # SILENT SYNC TO CLOUDFLARE INSTEAD OF SPAMMING TELEGRAM
-    sync_progress(scifi_up_ui)
-    last_up_update = now
+    try:
+        await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
+        last_up_update = now
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+    except:
+        pass
