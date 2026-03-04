@@ -42,13 +42,16 @@ def _kv_base():
 def _kv_poll_check():
     """
     Checks for poll_request flag in KV.
-    If found and timestamp is fresh (within 60s): returns that timestamp.
-    Does NOT delete — all running encodes must each see the same flag and fire.
-    If not found (404) or stale: returns False.
+    If found and timestamp is fresh (within 60s), and this run hasn't already
+    responded to it: claims it by writing responded_{GITHUB_RUN_ID} and returns
+    the timestamp. All 3 encodes independently see the same flag and each
+    claim their own slot — no deletions, no race conditions.
+    Returns False if no fresh flag, or this run already responded.
     """
     if not _kv_configured():
         return False
     try:
+        # Check the shared flag
         get_req = urllib.request.Request(
             f"{_kv_base()}/poll_request",
             method="GET",
@@ -56,12 +59,39 @@ def _kv_poll_check():
         )
         resp = urllib.request.urlopen(get_req, timeout=3)
         ts = int(resp.read().decode().strip())
-        # Only respond if the flag was set within the last 60s
-        if (time.time() * 1000) - ts < 60_000:
-            return ts
-        return False
+
+        # Stale flag (older than 60s) — ignore
+        if (time.time() * 1000) - ts >= 60_000:
+            return False
+
+        # Check if THIS run already responded to this exact timestamp
+        run_key = f"responded_{config.GITHUB_RUN_ID}"
+        try:
+            chk_req = urllib.request.Request(
+                f"{_kv_base()}/{run_key}",
+                method="GET",
+                headers=_kv_headers()
+            )
+            chk_resp = urllib.request.urlopen(chk_req, timeout=3)
+            already = int(chk_resp.read().decode().strip())
+            if already == ts:
+                return False  # already fired for this /p press
+        except urllib.error.HTTPError:
+            pass  # 404 = haven't responded yet, good
+
+        # Claim this /p for our run — TTL 120s (auto-cleans)
+        data = str(ts).encode()
+        put_req = urllib.request.Request(
+            f"{_kv_base()}/{run_key}?expiration_ttl=120",
+            data=data,
+            method="PUT",
+            headers={**_kv_headers(), "Content-Type": "text/plain"}
+        )
+        urllib.request.urlopen(put_req, timeout=3)
+        return ts
+
     except urllib.error.HTTPError:
-        return False  # 404 = no flag, expected most of the time
+        return False
     except Exception:
         return False
 
@@ -194,7 +224,6 @@ async def main():
 
         start_time      = time.time()
         last_poll_check  = 0
-        last_poll_ts     = 0   # timestamp of the last /p we already responded to
         # Track in-flight progress sends so we don't stack them
         progress_task    = None
 
@@ -223,9 +252,8 @@ async def main():
                             last_poll_check = time.time()
                             # Run in executor so it never blocks ffmpeg stdout reading
                             flag = await loop.run_in_executor(None, _kv_poll_check)
-                            if flag and flag != last_poll_ts and (progress_task is None or progress_task.done()):
-                                last_poll_ts = flag
-                                # Fire-and-forget: send progress box + auto-delete in 10s
+                            if flag and (progress_task is None or progress_task.done()):
+                                # Fire-and-forget: send progress box + auto-delete in 30s
                                 progress_task = asyncio.create_task(
                                     send_progress_and_autodelete(app, {
                                         "file":        config.FILE_NAME,
