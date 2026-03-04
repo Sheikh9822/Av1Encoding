@@ -173,4 +173,7 @@ jobs:
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
         run: python3 main.py
