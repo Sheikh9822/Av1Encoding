@@ -96,6 +96,7 @@ async def main():
 
         start_time        = time.time()
         last_progress_pct = -1
+        last_update_time  = 0
 
         with open(config.LOG_FILE, "w") as f_log:
             process = subprocess.Popen(
@@ -117,9 +118,14 @@ async def main():
                         eta      = (elapsed / percent) * (100 - percent) if percent > 0 else 0
                         size_mb  = os.path.getsize(config.FILE_NAME) / (1024 * 1024) if os.path.exists(config.FILE_NAME) else 0
 
-                        milestone = int(percent // 5) * 5
-                        if milestone > last_progress_pct:
+                        milestone   = int(percent // 5) * 5
+                        now         = time.time()
+                        pct_crossed = milestone > last_progress_pct
+                        time_due    = now - last_update_time >= 30
+
+                        if pct_crossed or time_due:
                             last_progress_pct = milestone
+                            last_update_time  = now
                             scifi_ui = get_encode_ui(config.FILE_NAME, speed, fps, elapsed, eta, curr_sec, duration, percent, final_crf, final_preset, res_label, crop_label_txt, hdr_label, grain_label, config.AUDIO_MODE, final_audio_bitrate, size_mb)
                             try:
                                 await app.edit_message_text(config.CHAT_ID, status.id, scifi_ui, parse_mode=enums.ParseMode.HTML)
