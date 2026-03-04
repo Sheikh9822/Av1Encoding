@@ -6,6 +6,9 @@ import shutil
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait
 
+print(f"DEBUG: WORKER_URL detected as: '{os.environ.get('WORKER_URL')}'")
+# If this prints 'None' or empty, the .yml file is NOT passing the secret.
+
 import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui, sync_progress
