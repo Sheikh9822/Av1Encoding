@@ -75,7 +75,7 @@ async def main():
 
         start_time, last_update = time.time(), 0
         with open(config.LOG_FILE, "w") as f_log:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, bufsize=1)  # bufsize=1 forces line-buffering for real-time progress
             for line in process.stdout:
                 f_log.write(line)
                 if config.CANCELLED: break
