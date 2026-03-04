@@ -1,8 +1,7 @@
 import time
 from datetime import timedelta
-import asyncio
+import os
 from pyrogram import enums
-from pyrogram.errors import FloodWait
 
 last_up_update = 0
 
@@ -26,6 +25,7 @@ def get_vmaf_ui(percent, speed, eta):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
+
 def get_download_fail_ui(error_msg):
     return (
         f"<code>┌─── ❌ [ DOWNLOAD.MISSION.FAILED ] ───┐\n"
@@ -35,6 +35,7 @@ def get_download_fail_ui(error_msg):
         f"│                                    \n"
         f"└────────────────────────────────────┘</code>"
     )
+
 def get_failure_ui(file_name, error_snippet):
     return (
         f"<code>┌─── ⚠️ [ MISSION.CRITICAL.FAILURE ] ───┐\n"
@@ -107,8 +108,6 @@ async def upload_progress(current, total, app, chat_id, status_msg, file_name):
     
     try:
         await app.edit_message_text(chat_id, status_msg.id, scifi_up_ui, parse_mode=enums.ParseMode.HTML)
-        last_up_update = now
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-    except:
+    except Exception:
         pass
+    last_up_update = now
