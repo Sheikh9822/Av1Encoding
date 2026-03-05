@@ -172,7 +172,18 @@ jobs:
           CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
         run: python3 main.py
 
+      - name: 🔍 Verify Encoded File Exists
+        run: |
+          FILE="${{ needs.download_phase.outputs.final_name }}"
+          if [ ! -f "$FILE" ]; then
+            echo "❌ Encoded file not found: $FILE"
+            ls -lah
+            exit 1
+          fi
+          echo "✅ Found: $FILE ($(du -sh "$FILE" | cut -f1))"
+
       - name: 📦 Upload Encoded Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: encoded-${{ github.run_id }}
@@ -183,6 +194,7 @@ jobs:
   # ── PHASE 3: UPLOAD TO TELEGRAM ───────────────────────────────────────────
   upload_phase:
     needs: [download_phase, encode_phase]
+    if: needs.encode_phase.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
