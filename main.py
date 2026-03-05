@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import time
 import shutil
 from pyrogram import Client, enums
@@ -12,6 +13,16 @@ import config
 from media import get_video_info, get_crop_params, select_params, async_generate_grid, get_vmaf, upload_to_cloud
 from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 
+
+# ---------------------------------------------------------------------------
+# KV FLAG CHECKER
+# main.py never writes to KV. It only checks for a poll_request flag (GET).
+# When the flag is found, main.py sends a TG message directly and deletes
+# the flag. The Worker only ever does 1 KV write per /p call.
+#
+# Daily KV reads: 12 encodes × poll every 5s × 3h = ~25,920 reads
+# Daily KV writes: 0 from main.py. Only from Worker when /p is sent.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -59,7 +70,6 @@ async def main():
 
     # 4. TELEGRAM UPLINK INITIALIZATION
     async with Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN) as app:
-        status = None
         try:
             status = await app.send_message(
                 config.CHAT_ID,
@@ -73,8 +83,6 @@ async def main():
                 f"📡 <b>[ SYSTEM RECOVERY ] Encoding: {config.FILE_NAME}</b>",
                 parse_mode=enums.ParseMode.HTML
             )
-        except Exception:
-            pass
 
         # 5. ENCODING EXECUTION
         cmd = [
@@ -141,8 +149,6 @@ async def main():
                         continue
 
         process.wait()
-        total_mission_time = time.time() - start_time
-
         total_mission_time = time.time() - start_time
 
         # 6. ERROR HANDLING
@@ -221,6 +227,9 @@ async def main():
             f"└ <b>Video:</b> {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
             f"└ <b>Audio:</b> {config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
+
+        # Reset upload progress trackers
+        import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
 
         await app.edit_message_text(config.CHAT_ID, status.id, "🚀 <b>[ SYSTEM.UPLINK ] Transmitting Final Video...</b>", parse_mode=enums.ParseMode.HTML)
 
