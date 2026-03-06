@@ -212,8 +212,6 @@ jobs:
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
-          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
-          DASHBOARD_SECRET: ${{ secrets.DASHBOARD_SECRET }}
         run: python3 main.py
       - name: 🗑 Delete Payload Artifact
         if: always()
