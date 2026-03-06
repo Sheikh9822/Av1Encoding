@@ -1,10 +1,8 @@
 import asyncio
-import json
 import os
 import subprocess
 import time
 import shutil
-import urllib.request
 from pyrogram import Client, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -14,38 +12,15 @@ from ui import format_time, upload_progress, get_failure_ui
 
 
 # ---------------------------------------------------------------------------
-# DASHBOARD REPORTER
-# POSTs progress to CF Pages Function → D1. Fire-and-forget, never blocks.
+# PROGRESS REPORTER
+# Prints structured [PROGRESS] lines to stdout — GitHub Actions captures these
+# live and the dashboard reads them via the GitHub Logs API.
 # ---------------------------------------------------------------------------
-DASHBOARD_URL    = os.getenv("DASHBOARD_URL", "").rstrip("/")
-DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
+def _kv(**kwargs) -> str:
+    return " ".join(f"{k}={v}" for k, v in kwargs.items() if v is not None)
 
-def push_progress(payload: dict):
-    if not DASHBOARD_URL or not DASHBOARD_SECRET:
-        print(f"[dashboard] missing vars: URL={bool(DASHBOARD_URL)} SECRET={bool(DASHBOARD_SECRET)}")
-        return
-    try:
-        body = json.dumps({**payload, "run_id": config.GITHUB_RUN_ID}).encode()
-        req  = urllib.request.Request(
-            f"{DASHBOARD_URL}/api/progress",
-            data=body,
-            headers={
-                "Content-Type":  "application/json",
-                "Authorization": f"Bearer {DASHBOARD_SECRET}",
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=5)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        print(f"[dashboard] push failed: {e} — response: {body}")
-    except Exception as e:
-        print(f"[dashboard] push failed: {e}")
-
-
-async def push_async(payload: dict):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, push_progress, payload)
+def report(**kwargs):
+    print(f"[PROGRESS] {_kv(**kwargs)}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +39,7 @@ async def main():
         duration, width, height, is_hdr, total_frames, channels, fps_val = get_video_info()
     except Exception as e:
         print(f"Metadata error: {e}")
-        await push_async({"phase": "error", "file": config.FILE_NAME, "error_snippet": str(e)})
+        report(phase="error", elapsed=0, error=str(e)[:200].replace(" ", "_"))
         return
 
     # 3. PARAMETER CONFIGURATION
@@ -85,13 +60,10 @@ async def main():
     svtav1_tune         = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1"
     hdr_label           = "HDR10" if is_hdr else "SDR"
 
-    # 4. PUSH INITIAL STATE — no Telegram touch at all
-    await push_async({
-        "phase": "active", "file": config.FILE_NAME,
-        "percent": 0, "elapsed": 0, "eta": 0, "speed": 0, "fps": 0, "size_mb": 0,
-        "crf": final_crf, "preset": final_preset, "res": res_label,
-        "hdr": hdr_label, "audio_bitrate": final_audio_bitrate,
-    })
+    # 4. PUSH INITIAL STATE
+    report(phase="active", percent=0, elapsed=0, eta=0, speed=0, fps=0, size_mb=0,
+           crf=final_crf, preset=final_preset, res=res_label,
+           hdr=hdr_label, audio_bitrate=final_audio_bitrate)
 
     # 5. ENCODING — Telegram client NOT open during this phase
     cmd = [
@@ -133,14 +105,12 @@ async def main():
                     if int(percent) > last_push_pct or (now - last_push_time) >= 10:
                         last_push_pct  = int(percent)
                         last_push_time = now
-                        await push_async({
-                            "phase": "active", "file": config.FILE_NAME,
-                            "percent": round(percent, 1), "elapsed": int(elapsed),
-                            "eta": int(eta), "speed": round(speed, 2),
-                            "fps": round(fps, 1), "size_mb": round(size_mb, 1),
-                            "crf": final_crf, "preset": final_preset, "res": res_label,
-                            "hdr": hdr_label, "audio_bitrate": final_audio_bitrate,
-                        })
+                        report(phase="active",
+                               percent=round(percent, 1), elapsed=int(elapsed),
+                               eta=int(eta), speed=round(speed, 2),
+                               fps=round(fps, 1), size_mb=round(size_mb, 1),
+                               crf=final_crf, preset=final_preset, res=res_label,
+                               hdr=hdr_label, audio_bitrate=final_audio_bitrate)
                 except Exception:
                     continue
 
@@ -153,10 +123,7 @@ async def main():
         # 7. ERROR
         if process.returncode != 0:
             error_snippet = "".join(open(config.LOG_FILE).readlines()[-20:]) if os.path.exists(config.LOG_FILE) else "Unknown crash."
-            await push_async({
-                "phase": "error", "file": config.FILE_NAME,
-                "elapsed": int(total_mission_time), "error_snippet": error_snippet,
-            })
+            report(phase="error", elapsed=int(total_mission_time))
             await app.send_message(config.CHAT_ID, get_failure_ui(config.FILE_NAME, error_snippet), parse_mode=enums.ParseMode.HTML)
             await app.send_document(config.CHAT_ID, config.LOG_FILE, caption="📑 <b>FULL ENCODE LOG</b>", parse_mode=enums.ParseMode.HTML)
             return
@@ -171,7 +138,7 @@ async def main():
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
 
         # 9. VMAF + GRID + CLOUD
-        await push_async({"phase": "vmaf", "file": config.FILE_NAME, "elapsed": int(total_mission_time)})
+        report(phase="vmaf", elapsed=int(total_mission_time))
 
         grid_task  = asyncio.create_task(async_generate_grid(duration, config.FILE_NAME))
         cloud_task = asyncio.create_task(upload_to_cloud(config.FILE_NAME))
@@ -185,14 +152,13 @@ async def main():
         cloud = await cloud_task
 
         # 10. PUSH DONE
-        await push_async({
-            "phase": "done", "file": config.FILE_NAME,
-            "elapsed": int(total_mission_time), "final_size_mb": round(final_size, 2),
-            "vmaf": vmaf_val, "ssim": ssim_val,
-            "crf": final_crf, "preset": final_preset, "res": res_label,
-            "hdr": hdr_label, "audio_bitrate": final_audio_bitrate,
-            "gofile_url": cloud.get("page"), "direct_url": cloud.get("direct"),
-        })
+        report(phase="done", elapsed=int(total_mission_time),
+               final_size_mb=round(final_size, 2),
+               vmaf=vmaf_val, ssim=ssim_val,
+               crf=final_crf, preset=final_preset, res=res_label,
+               hdr=hdr_label, audio_bitrate=final_audio_bitrate,
+               gofile_url=cloud.get("page") or "none",
+               direct_url=cloud.get("direct") or "none")
 
         # 11. BUILD TG BUTTONS
         btn_row = []
