@@ -227,9 +227,9 @@ async def main():
     if not tg_ready.is_set():
         print("Encode finished. Waiting for Telegram to become available...")
         try:
-            await asyncio.wait_for(tg_ready.wait(), timeout=1800)  # max 30 min
+            await asyncio.wait_for(tg_ready.wait(), timeout=7200)  # max 2 hours
         except asyncio.TimeoutError:
-            print("Telegram never connected within 30 min. Exiting without upload.")
+            print("Telegram never connected within 2 hours. Exiting without upload.")
             tg_task.cancel()
             return
 
