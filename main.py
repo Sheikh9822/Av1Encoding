@@ -27,28 +27,98 @@ from ui import get_encode_ui, format_time, upload_progress, get_failure_ui
 # TELEGRAM AUTH — runs concurrently with encoding.
 # Sets tg_ready when the client is connected and initial message is sent.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# LANE RESOLUTION — derive A/B/C from GITHUB_RUN_NUMBER to match tg_handler.py
+# ---------------------------------------------------------------------------
+def _resolve_session_names() -> list[str]:
+    """
+    Return an ordered list of session names to try, most-preferred first.
+    The lane-specific session is tried first; the legacy name is the fallback
+    so the first run after a deploy still works even if only the old cache exists.
+    """
+    run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+    last_digit = run_number % 10
+    if last_digit in (0, 3, 6, 9):
+        lane = "A"
+    elif last_digit in (1, 4, 7):
+        lane = "B"
+    else:
+        lane = "C"
+    print(f"Encoder session lane: {lane} (run #{run_number})")
+    # Lane-specific first, then the legacy tg_dl copy, then the bare fallback
+    return [
+        f"tg_session_dir/enc_session_{lane}",
+        f"tg_session_dir/tg_dl_session_{lane}",
+        config.SESSION_NAME,
+    ]
+
+
 async def connect_telegram(tg_state: dict, tg_ready: asyncio.Event, label: str):
     """
-    Connect to Telegram. If Telegram returns a FloodWait, sleep exactly the
-    prescribed duration then try once more — no blind retry loops needed since
-    Telegram tells us precisely how long to wait.
+    Connect to Telegram trying each session in priority order.
+    If a session gets a FloodWait we skip to the next one immediately —
+    the flooded session is noted so it won't be retried.
+    Falls back to sleeping out the shortest FloodWait only if every session
+    is flooded.
     tg_state keys set on success: 'app', 'status'
     """
-    app = Client(
-        config.SESSION_NAME,
-        api_id=config.API_ID,
-        api_hash=config.API_HASH,
-        bot_token=config.BOT_TOKEN,
-    )
+    session_names = _resolve_session_names()
+    flood_waits: dict[str, int] = {}   # session_name → seconds to wait
 
-    try:
-        await app.start()
-    except FloodWait as e:
-        print(f"TG FloodWait on auth: waiting {e.value}s as instructed — encoding continues...")
-        await asyncio.sleep(e.value)
-        await app.start()
-    except Exception as e:
-        print(f"TG auth failed: {e}")
+    app = None
+    for session_name in session_names:
+        try:
+            candidate = Client(
+                session_name,
+                api_id=config.API_ID,
+                api_hash=config.API_HASH,
+                bot_token=config.BOT_TOKEN,
+            )
+            await candidate.start()
+            app = candidate
+            print(f"TG auth OK with session: {session_name}")
+            break
+        except FloodWait as e:
+            flood_waits[session_name] = e.value
+            print(f"FloodWait {e.value}s on session '{session_name}' — trying next session...")
+            continue
+        except Exception as e:
+            print(f"TG auth error on session '{session_name}': {e} — trying next session...")
+            continue
+
+    # All sessions flooded — sleep out the shortest wait then keep retrying
+    # with the same sleep-and-retry loop until auth succeeds (original fallback
+    # behaviour: Telegram tells us exactly how long to wait, so we always obey).
+    if app is None and flood_waits:
+        best_session = min(flood_waits, key=flood_waits.get)
+        wait_secs    = flood_waits[best_session]
+        attempt = 0
+        while True:
+            attempt += 1
+            print(f"All sessions flooded. Sleeping {wait_secs}s for '{best_session}' (attempt {attempt})...")
+            await asyncio.sleep(wait_secs + 5)
+            try:
+                candidate = Client(
+                    best_session,
+                    api_id=config.API_ID,
+                    api_hash=config.API_HASH,
+                    bot_token=config.BOT_TOKEN,
+                )
+                await candidate.start()
+                app = candidate
+                print(f"TG auth OK (post-flood attempt {attempt}) with session: {best_session}")
+                break
+            except FloodWait as e:
+                # Telegram issued a fresh FloodWait — obey it and loop again
+                wait_secs = e.value
+                print(f"Another FloodWait: {wait_secs}s — will keep waiting...")
+                continue
+            except Exception as e:
+                print(f"TG auth failed on post-flood attempt {attempt}: {e}")
+                return
+
+    if app is None:
+        print("TG auth failed: no usable session found.")
         return
 
     try:
@@ -144,6 +214,7 @@ async def main():
     tg_task  = asyncio.create_task(
         connect_telegram(tg_state, tg_ready, config.FILE_NAME)
     )
+    tg_connect_start = time.time()   # record when we started waiting for TG
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
     cmd = [
