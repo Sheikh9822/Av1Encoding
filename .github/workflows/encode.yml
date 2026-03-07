@@ -65,19 +65,28 @@ jobs:
           sudo apt-get update && sudo apt-get install -y aria2
           pip install pyrogram tgcrypto yt-dlp
 
-      - name: 📁 Setup Session
+      - name: 📁 Setup Session Dir
         run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LAST=$(( ${{ github.run_number }} % 10 ))
+          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
+            echo "name=lane-A" >> $GITHUB_OUTPUT
+          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
+            echo "name=lane-B" >> $GITHUB_OUTPUT
+          else
+            echo "name=lane-C" >> $GITHUB_OUTPUT
+          fi
+          echo "Lane: $(cat $GITHUB_OUTPUT | grep name | cut -d= -f2)"
 
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ 
-            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'lane-A' ||
-            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'lane-B' ||
-            'lane-C'
-          }}
-          restore-keys: tg-session-lane-
+          key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
 
       - name: 📥 Universal Download
         env:
@@ -90,6 +99,7 @@ jobs:
           CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           URL="${{ github.event.inputs.video_url }}"
           
@@ -102,14 +112,11 @@ jobs:
           # Direct/CDN Logic (Uses aria2c directly to prevent yt-dlp timeouts)
           else
             if [ -z "$CUSTOM" ]; then
-                # For m3u8, use parent directory name (e.g. /show-name/playlist.m3u8 → show-name)
-                # For direct files, use the filename itself
                 if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
                     CLEAN_NAME=$(dirname "$URL" | xargs basename | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
                 else
                     CLEAN_NAME=$(basename "$URL" | sed 's/\?.*//' | python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))")
                 fi
-                # Ensure it has a video extension
                 if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
                     FN="${CLEAN_NAME}.mkv"
                 else
@@ -119,7 +126,6 @@ jobs:
                 FN="${CUSTOM}.mkv"
             fi
             
-            # Detect HLS/m3u8: use yt-dlp with aria2c as external downloader for speed
             if [[ "$URL" == *.m3u8* ]] || [[ "$URL" == *m3u8* ]]; then
                 echo "📥 Downloading HLS Stream (yt-dlp + aria2c backend): $URL"
                 yt-dlp \
@@ -174,55 +180,44 @@ jobs:
         with:
           name: payload-${{ github.run_id }}
 
+      - name: 📁 Setup Session Dir
+        run: mkdir -p tg_session_dir
+
+      - name: 🔀 Resolve Lane
+        id: lane
+        run: |
+          LAST=$(( ${{ github.run_number }} % 10 ))
+          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
+            echo "name=lane-A" >> $GITHUB_OUTPUT
+          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
+            echo "name=lane-B" >> $GITHUB_OUTPUT
+          else
+            echo "name=lane-C" >> $GITHUB_OUTPUT
+          fi
+
       - name: 💾 Restore Session Cache
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-${{ 
-            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'lane-A' ||
-            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'lane-B' ||
-            'lane-C'
-          }}
-          restore-keys: tg-session-lane-
+          key: tg-session-${{ steps.lane.outputs.name }}
+          restore-keys: tg-session-
 
       - name: 🔑 Authorize Bot Session
         run: |
-          # Determine lane from run number (must match tg_handler.py logic)
-          RUN_NUM=${{ github.run_number }}
-          LAST=${RUN_NUM: -1}
-          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
-            LANE="A"
-          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
-            LANE="B"
-          else
-            LANE="C"
-          fi
+          LANE="${{ steps.lane.outputs.name }}"
           echo "🔀 Lane: $LANE"
-          # Try lane-specific session first, fall back to legacy session name
-          for SESSION_FILE in "tg_session_dir/tg_dl_session_${LANE}.session" "tg_session_dir/enc_session_${LANE}.session" "tg_session_dir/tg_dl_session.session" "tg_session_dir/enc_session.session"; do
+          # Try lane-specific session first, then legacy fallbacks
+          for SESSION_FILE in \
+            "tg_session_dir/enc_session_${LANE}.session" \
+            "tg_session_dir/tg_dl_session_${LANE}.session" \
+            "tg_session_dir/enc_session.session" \
+            "tg_session_dir/tg_dl_session.session"; do
             if [ -f "$SESSION_FILE" ]; then
               cp "$SESSION_FILE" ./enc_session.session
               echo "✅ Session restored: $SESSION_FILE"
               break
             fi
           done
-
-      - name: 💾 Save Bot Session
-        if: always()
-        run: |
-          RUN_NUM=${{ github.run_number }}
-          LAST=${RUN_NUM: -1}
-          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
-            LANE="A"
-          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
-            LANE="B"
-          else
-            LANE="C"
-          fi
-          if [ -f "enc_session.session" ]; then
-            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
-            echo "✅ Bot session saved: enc_session_${LANE}.session"
-          fi
 
       - name: 🚀 Start Parallel Encoder
         env:
@@ -234,6 +229,7 @@ jobs:
           CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
           CF_KV_TOKEN: ${{ secrets.CF_KV_TOKEN }}
           SESSION_NAME: "enc_session"
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
           USER_RES: ${{ github.event.inputs.res_choice }}
           USER_CRF: ${{ github.event.inputs.custom_crf }}
           USER_PRESET: ${{ github.event.inputs.custom_preset }}
@@ -243,6 +239,16 @@ jobs:
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
+
+      - name: 💾 Save Bot Session
+        if: always()
+        run: |
+          LANE="${{ steps.lane.outputs.name }}"
+          if [ -f "enc_session.session" ]; then
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+            echo "✅ Bot session saved: enc_session_${LANE}.session"
+          fi
+
       - name: 🗑 Delete Payload Artifact
         if: always()
         uses: actions/github-script@v7
