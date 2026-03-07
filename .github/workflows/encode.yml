@@ -72,7 +72,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-master
+          key: tg-session-${{ 
+            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'lane-A' ||
+            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'lane-B' ||
+            'lane-C'
+          }}
+          restore-keys: tg-session-lane-
 
       - name: 📥 Universal Download
         env:
@@ -173,25 +178,50 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tg_session_dir
-          key: tg-session-master
+          key: tg-session-${{ 
+            (endsWith(github.run_number, '0') || endsWith(github.run_number, '3') || endsWith(github.run_number, '6') || endsWith(github.run_number, '9')) && 'lane-A' ||
+            (endsWith(github.run_number, '1') || endsWith(github.run_number, '4') || endsWith(github.run_number, '7')) && 'lane-B' ||
+            'lane-C'
+          }}
+          restore-keys: tg-session-lane-
 
       - name: 🔑 Authorize Bot Session
         run: |
-          if [ -f "tg_session_dir/tg_dl_session.session" ]; then
-            cp tg_session_dir/tg_dl_session.session ./enc_session.session
-            echo "✅ User session copied."
+          # Determine lane from run number (must match tg_handler.py logic)
+          RUN_NUM=${{ github.run_number }}
+          LAST=${RUN_NUM: -1}
+          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
+            LANE="A"
+          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
+            LANE="B"
+          else
+            LANE="C"
           fi
-          if [ -f "tg_session_dir/enc_session.session" ]; then
-            cp tg_session_dir/enc_session.session ./enc_session.session
-            echo "✅ Bot session restored from cache."
-          fi
+          echo "🔀 Lane: $LANE"
+          # Try lane-specific session first, fall back to legacy session name
+          for SESSION_FILE in "tg_session_dir/tg_dl_session_${LANE}.session" "tg_session_dir/enc_session_${LANE}.session" "tg_session_dir/tg_dl_session.session" "tg_session_dir/enc_session.session"; do
+            if [ -f "$SESSION_FILE" ]; then
+              cp "$SESSION_FILE" ./enc_session.session
+              echo "✅ Session restored: $SESSION_FILE"
+              break
+            fi
+          done
 
       - name: 💾 Save Bot Session
         if: always()
         run: |
+          RUN_NUM=${{ github.run_number }}
+          LAST=${RUN_NUM: -1}
+          if [[ "$LAST" == "0" || "$LAST" == "3" || "$LAST" == "6" || "$LAST" == "9" ]]; then
+            LANE="A"
+          elif [[ "$LAST" == "1" || "$LAST" == "4" || "$LAST" == "7" ]]; then
+            LANE="B"
+          else
+            LANE="C"
+          fi
           if [ -f "enc_session.session" ]; then
-            cp enc_session.session tg_session_dir/enc_session.session
-            echo "✅ Bot session saved to cache."
+            cp enc_session.session "tg_session_dir/enc_session_${LANE}.session"
+            echo "✅ Bot session saved: enc_session_${LANE}.session"
           fi
 
       - name: 🚀 Start Parallel Encoder
