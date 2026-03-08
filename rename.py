@@ -123,24 +123,25 @@ def detect_quality(height: int) -> str:
 # ---------------------------------------------------------------------------
 
 def build_output_name(
-    anime_name:  str,
-    season:      int | str,
-    episode:     int | str,
-    quality:     str,
-    audio_type:  str,
-    ext:         str = "mkv",
+    anime_name:   str,
+    season:       int | str,
+    episode:      int | str,
+    quality:      str,
+    audio_type:   str,
+    content_type: str = "Anime",
+    ext:          str = "mkv",
 ) -> str:
     """
     Assemble the final filename.
 
-    Format:  [S02-E07] Anime Name [1080p] [Dual].mkv
+    Format:  [Anime] [S02-E07] Anime Name [1080p] [Dual].mkv
     """
-    # Strip characters that are illegal in most filesystems
-    safe_name   = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
-    season_str  = f"S{int(season):02d}"
-    episode_str = f"E{int(episode):02d}"
+    safe_name    = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
+    safe_ctype   = re.sub(r'[<>:"/\\|?*\n\r\t]', "", content_type).strip() or "Anime"
+    season_str   = f"S{int(season):02d}"
+    episode_str  = f"E{int(episode):02d}"
 
-    return f"[{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
+    return f"[{safe_ctype}] [{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
 
 
 # ---------------------------------------------------------------------------
@@ -191,22 +192,27 @@ def format_track_report(audio_tracks: list[dict], sub_tracks: list[dict]) -> str
 # ---------------------------------------------------------------------------
 
 def resolve_output_name(
-    source:      str,
-    anime_name:  str,
-    season:      int | str,
-    episode:     int | str,
-    height:      int,
-    ext:         str = "mkv",
+    source:               str,
+    anime_name:           str,
+    season:               int | str,
+    episode:              int | str,
+    height:               int,
+    ext:                  str = "mkv",
+    audio_type_override:  str = "Auto",
+    content_type:         str = "Anime",
 ) -> tuple[str, str, list[dict], list[dict]]:
     """
     One-call helper used by main.py.
 
-    Returns
-    -------
-    (output_filename, audio_type, audio_tracks, sub_tracks)
+    Returns (output_filename, audio_type, audio_tracks, sub_tracks)
     """
     audio_tracks, sub_tracks = get_track_info(source)
-    audio_type  = detect_audio_type(audio_tracks)
-    quality     = detect_quality(height)
-    filename    = build_output_name(anime_name, season, episode, quality, audio_type, ext)
+
+    if audio_type_override and audio_type_override.strip().lower() != "auto":
+        audio_type = audio_type_override.strip().capitalize()
+    else:
+        audio_type = detect_audio_type(audio_tracks)
+
+    quality  = detect_quality(height)
+    filename = build_output_name(anime_name, season, episode, quality, audio_type, content_type, ext)
     return filename, audio_type, audio_tracks, sub_tracks

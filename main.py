@@ -184,11 +184,13 @@ async def main():
     # 3. RENAME — build structured output filename if ANIME_NAME is set
     if config.ANIME_NAME and config.ANIME_NAME.strip():
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
-            source      = config.SOURCE,
-            anime_name  = config.ANIME_NAME,
-            season      = config.SEASON,
-            episode     = config.EPISODE,
-            height      = height,
+            source               = config.SOURCE,
+            anime_name           = config.ANIME_NAME,
+            season               = config.SEASON,
+            episode              = config.EPISODE,
+            height               = height,
+            audio_type_override  = config.AUDIO_TYPE,
+            content_type         = config.CONTENT_TYPE,
         )
         config.FILE_NAME = resolved_name
         print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
@@ -405,11 +407,20 @@ async def main():
 
         crop_label_report = " | Cropped" if crop_val else ""
         track_report = format_track_report(audio_tracks, sub_tracks)
+
+        # Append user-supplied track label notes if provided
+        user_track_notes = ""
+        if config.SUB_TRACKS and config.SUB_TRACKS.strip():
+            user_track_notes += f"\n🔤 <b>SUB LABELS:</b>  <code>{config.SUB_TRACKS}</code>"
+        if config.AUDIO_TRACKS and config.AUDIO_TRACKS.strip():
+            user_track_notes += f"\n🔊 <b>AUDIO LABELS:</b> <code>{config.AUDIO_TRACKS}</code>"
+
         audio_mode_line = (
             f"{audio_type_label.upper()} ({config.AUDIO_MODE.upper()} @ {final_audio_bitrate})"
             if audio_type_label
             else f"{config.AUDIO_MODE.upper()} @ {final_audio_bitrate}"
         )
+        content_line = f"└ Type: {config.CONTENT_TYPE}\n" if config.CONTENT_TYPE else ""
         report = (
             f"✅ <b>MISSION ACCOMPLISHED</b>\n\n"
             f"📄 <b>FILE:</b> <code>{config.FILE_NAME}</code>\n"
@@ -420,8 +431,10 @@ async def main():
             f"🛠 <b>SPECS:</b>\n"
             f"└ Preset: {final_preset} | CRF: {final_crf}\n"
             f"└ Video: {res_label}{crop_label_report} | {hdr_label}{grain_label}\n"
-            f"└ Audio: {audio_mode_line}\n\n"
-            f"{track_report}"
+            f"└ Audio: {audio_mode_line}\n"
+            f"{content_line}"
+            f"\n{track_report}"
+            f"{user_track_notes}"
         )
 
         import ui as _ui; _ui.last_up_pct = -1; _ui.last_up_update = 0; _ui.up_start_time = 0
