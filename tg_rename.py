@@ -22,6 +22,7 @@ Environment variables (set by rename.yml):
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -55,7 +56,10 @@ SUB_TRACKS   = os.getenv("SUB_TRACKS",      "").strip()
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS",    "").strip()
 
 SOURCE_FILE  = "./rename_source.mkv"
-SCREENSHOT   = "grid_preview.jpg"
+THUMBNAIL    = "./rename_thumb.jpg"
+
+# Fraction of total duration to grab the thumbnail from (0.20 = 20% in — past OP)
+THUMB_AT     = 0.20
 
 # ── LANE RESOLUTION ───────────────────────────────────────────────────────────
 
@@ -169,6 +173,41 @@ def probe_and_build_name() -> tuple[str, str, list, list]:
     )
     return filename, audio_type_label, audio_tracks, sub_tracks
 
+def capture_thumbnail(source: str) -> bool:
+    """
+    Grab a single frame at THUMB_AT % of total duration.
+    Scales to 1280px wide (keeps AR), saves as JPEG.
+    Returns True on success.
+    """
+    # Get duration via ffprobe
+    try:
+        cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
+               "-show_format", os.path.abspath(source)]
+        raw  = subprocess.check_output(cmd, stderr=subprocess.PIPE).decode()
+        duration = float(json.loads(raw)["format"].get("duration", 0))
+    except Exception as e:
+        print(f"[thumb] ffprobe duration failed: {e}")
+        duration = 0
+
+    ts = max(duration * THUMB_AT, 5.0) if duration > 10 else 5.0
+    hms = f"{int(ts//3600):02d}:{int((ts%3600)//60):02d}:{ts%60:06.3f}"
+
+    cmd = [
+        "ffmpeg", "-ss", hms, "-i", os.path.abspath(source),
+        "-frames:v", "1",
+        "-vf", "scale=1280:-1",
+        "-q:v", "3",
+        os.path.abspath(THUMBNAIL), "-y"
+    ]
+    ret = subprocess.run(cmd, capture_output=True)
+    ok  = os.path.exists(THUMBNAIL) and os.path.getsize(THUMBNAIL) > 0
+    if not ok:
+        print(f"[thumb] capture failed (rc={ret.returncode}): {ret.stderr.decode()[:200]}")
+    else:
+        print(f"[thumb] captured at {hms} → {os.path.getsize(THUMBNAIL)//1024}KB")
+    return ok
+
+
 # ── REMUX (apply new name + clean metadata) ───────────────────────────────────
 
 def remux(output_name: str) -> bool:
@@ -272,7 +311,15 @@ async def main():
 
         remux(output_name)
 
-        # ── 4. UPLOAD ──────────────────────────────────────────────────────
+        # ── 4. THUMBNAIL ───────────────────────────────────────────────────
+        await tg_edit(app, CHAT_ID, status.id,
+            "<code>┌─── 🖼️  [ THUMBNAIL ] ──────────────┐\n"
+            "│ Capturing frame preview...         \n"
+            "└────────────────────────────────────┘</code>")
+
+        has_thumb = capture_thumbnail(output_name)
+
+        # ── 5. UPLOAD ──────────────────────────────────────────────────────
         final_size = os.path.getsize(output_name) / 1_048_576
         await tg_edit(app, CHAT_ID, status.id,
             "<b>🚀 [ UPLINK ] Transmitting renamed file...</b>")
@@ -303,6 +350,7 @@ async def main():
         await app.send_document(
             chat_id=CHAT_ID,
             document=output_name,
+            thumb=THUMBNAIL if has_thumb else None,
             caption=report,
             parse_mode=enums.ParseMode.HTML,
             progress=upload_progress,
@@ -313,7 +361,7 @@ async def main():
         except: pass
 
         # Cleanup
-        for f in [SOURCE_FILE, output_name, SCREENSHOT]:
+        for f in [SOURCE_FILE, output_name, THUMBNAIL]:
             if os.path.exists(f): os.remove(f)
 
         print(f"[rename] Mission complete → {output_name}")
