@@ -248,7 +248,7 @@ async def main():
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
     # Without it SVT-AV1 tries to pin threads to specific cores and hangs indefinitely.
-    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0:lp=4"
+    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
@@ -337,8 +337,7 @@ async def main():
                         scifi_ui += (
                             f"\n\n🖥 <b>SYSTEM</b>\n"
                             f"└ CPU: <code>{monitor_stats['sys_cpu']:.1f}%</code>\n"
-                            f"└ RAM: <code>{monitor_stats['ram_mb']:.0f}MB</code> / "
-                            f"<code>{monitor_stats['sys_ram']:.1f}%</code> sys"
+                            f"└ RAM: <code>{monitor_stats['sys_ram']:.1f}%</code> sys"
                         )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
