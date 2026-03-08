@@ -331,14 +331,10 @@ async def main():
                         curr_sec, duration, percent,
                         final_crf, final_preset, res_label,
                         crop_label_txt, hdr_label, grain_label,
-                        config.AUDIO_MODE, final_audio_bitrate, size_mb
+                        config.AUDIO_MODE, final_audio_bitrate, size_mb,
+                        cpu=monitor_stats.get("sys_cpu"),
+                        ram=monitor_stats.get("sys_ram"),
                     )
-                    if monitor_stats:
-                        scifi_ui += (
-                            f"\n\n🖥 <b>SYSTEM</b>\n"
-                            f"└ CPU: <code>{monitor_stats['sys_cpu']:.1f}%</code>\n"
-                            f"└ RAM: <code>{monitor_stats['sys_ram']:.1f}%</code> sys"
-                        )
                     last_ui_text = scifi_ui   # always keep the freshest snapshot
 
                     if pct_crossed or time_due:
