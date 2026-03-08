@@ -54,7 +54,7 @@ CONTENT_TYPE = os.getenv("CONTENT_TYPE",    "Anime").strip()
 SUB_TRACKS   = os.getenv("SUB_TRACKS",      "").strip()
 AUDIO_TRACKS = os.getenv("AUDIO_TRACKS",    "").strip()
 
-SOURCE_FILE  = "rename_source.mkv"
+SOURCE_FILE  = "./rename_source.mkv"
 SCREENSHOT   = "grid_preview.jpg"
 
 # ── LANE RESOLUTION ───────────────────────────────────────────────────────────
@@ -142,14 +142,19 @@ def probe_and_build_name() -> tuple[str, str, list, list]:
     # Quality — read from actual video height via ffprobe
     cmd = [
         "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_streams", "-select_streams", "v:0", SOURCE_FILE
+        "-show_streams", "-select_streams", "v:0",
+        os.path.abspath(SOURCE_FILE)
     ]
     import json
     try:
-        raw  = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+        raw  = subprocess.check_output(cmd, stderr=subprocess.PIPE).decode()
         data = json.loads(raw)
         height = int(data["streams"][0].get("height", 1080))
-    except Exception:
+    except subprocess.CalledProcessError as e:
+        print(f"[rename] ffprobe failed (rc={e.returncode}): {e.stderr.decode().strip()}")
+        height = 1080
+    except Exception as e:
+        print(f"[rename] ffprobe error: {e}")
         height = 1080
 
     quality  = detect_quality(height)
@@ -171,16 +176,24 @@ def remux(output_name: str) -> bool:
     mkvmerge: copy all streams into a new container with the structured filename.
     No transcoding — pure stream copy. Returns True on success.
     """
-    fixed = f"FIXED_{output_name}"
+    src   = os.path.abspath(SOURCE_FILE)
+    dst   = os.path.abspath(output_name)
+    fixed = os.path.abspath(f"FIXED_{output_name}")
+
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Source file missing before remux: {src}")
+
     ret = subprocess.run(
-        ["mkvmerge", "-o", fixed, SOURCE_FILE],
+        ["mkvmerge", "-o", fixed, src],
         capture_output=True
     )
     if os.path.exists(fixed) and os.path.getsize(fixed) > 0:
-        os.rename(fixed, output_name)
+        os.rename(fixed, dst)
+        if os.path.exists(src): os.remove(src)
         return True
     # Fallback: simple rename if mkvmerge fails (e.g. non-MKV source)
-    os.rename(SOURCE_FILE, output_name)
+    print(f"[remux] mkvmerge failed (rc={ret.returncode}), falling back to rename")
+    os.rename(src, dst)
     return ret.returncode == 0
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
@@ -224,6 +237,13 @@ async def main():
         except Exception as e:
             await tg_edit(app, CHAT_ID, status.id,
                 f"<b>❌ DOWNLOAD FAILED:</b>\n<code>{e}</code>")
+            sys.exit(1)
+
+        # Verify the file actually landed
+        if not os.path.exists(SOURCE_FILE) or os.path.getsize(SOURCE_FILE) == 0:
+            await tg_edit(app, CHAT_ID, status.id,
+                "<b>❌ DOWNLOAD ERROR:</b> File not found after download.\n"
+                f"<code>Expected: {SOURCE_FILE}</code>")
             sys.exit(1)
 
         dl_time = time.time() - start_total
