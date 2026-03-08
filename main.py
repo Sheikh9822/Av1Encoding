@@ -205,14 +205,16 @@ async def main():
     final_crf    = config.USER_CRF if (config.USER_CRF and config.USER_CRF.strip()) else def_crf
     final_preset = config.USER_PRESET if (config.USER_PRESET and config.USER_PRESET.strip()) else def_preset
 
-    res_label = config.USER_RES if config.USER_RES else "1080"
+    res_label = config.USER_RES if (config.USER_RES and config.USER_RES.strip()) else None
     crop_val  = get_crop_params(duration)
 
     # -- VIDEO FILTERS --
     vf_filters = ["hqdn3d=1.5:1.2:3:3"]
     if crop_val: vf_filters.append(f"crop={crop_val}")
-    vf_filters.append(f"scale=-1:{res_label}")
+    if res_label: vf_filters.append(f"scale=-1:{res_label}")  # skip when ORIGINAL
     video_filters = ["-vf", ",".join(vf_filters)]
+
+    res_label = res_label or "Original"  # display label for UI / report
 
     # -- AUDIO CONFIGURATION --
     audio_cmd           = ["-af", "aformat=channel_layouts=stereo", "-c:a", "libopus", "-b:a", "32k", "-vbr", "on"]
