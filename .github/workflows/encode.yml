@@ -31,6 +31,24 @@ on:
       run_vmaf:
         description: 'Run VMAF?'
         default: 'true'
+      anime_name:
+        description: 'Anime Name (leave blank to skip rename)'
+        default: ''
+      season:
+        description: 'Season Number'
+        default: '1'
+      episode:
+        description: 'Episode Number'
+        default: '1'
+      audio_type:
+        description: 'Audio Type Override (Auto/Sub/Dual/Tri/Multi)'
+        default: 'Auto'
+      sub_tracks:
+        description: 'Subtitle Track Labels'
+        default: ''
+      audio_tracks:
+        description: 'Audio Track Labels'
+        default: ''
 
 permissions:
   actions: write
@@ -237,6 +255,12 @@ jobs:
           AUDIO_MODE: ${{ github.event.inputs.audio_mode }}
           AUDIO_BITRATE: ${{ github.event.inputs.audio_bitrate }}
           RUN_VMAF: ${{ github.event.inputs.run_vmaf }}
+          ANIME_NAME:   ${{ github.event.inputs.anime_name }}
+          SEASON:       ${{ github.event.inputs.season }}
+          EPISODE:      ${{ github.event.inputs.episode }}
+          AUDIO_TYPE:   ${{ github.event.inputs.audio_type }}
+          SUB_TRACKS:   ${{ github.event.inputs.sub_tracks }}
+          AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
 
