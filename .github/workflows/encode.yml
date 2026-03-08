@@ -237,8 +237,8 @@ jobs:
       - name: Collect Workflow Telemetry
           uses: catchpoint/workflow-telemetry-action@v2
           with:
-          theme: dark
-          job_summary: true # This puts the graph in your GitHub Action Summary page
+            theme: dark
+            job_summary: true # This puts the graph in your GitHub Action Summary page
 
       - name: 🚀 Start Parallel Encoder
         env:
