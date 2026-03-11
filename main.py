@@ -357,10 +357,14 @@ async def main():
     # They inflate file size significantly and are dropped from the output.
     # We identify them by their subtitle-stream-relative index (0-based within
     # the subtitle stream list) and inject -map -0:s:N exclusions into ffmpeg.
-    PGS_CODECS = {"hdmv_pgs_bitmap", "pgssub"}
+    # Detection is format-based: any codec name containing "pgs" is matched,
+    # covering hdmv_pgs_subtitle, hdmv_pgs_bitmap, pgssub, and any future variants.
+    def _is_pgs(codec: str) -> bool:
+        return "pgs" in codec.lower()
+
     pgs_exclusions: list[str] = []
     for sub_idx, st in enumerate(sub_tracks):
-        if st.get("codec", "").lower() in PGS_CODECS:
+        if _is_pgs(st.get("codec", "")):
             pgs_exclusions += ["-map", f"-0:s:{sub_idx}"]
             print(f"[encode] Dropping PGS subtitle stream #s:{sub_idx} "
                   f"(codec: {st['codec']}, lang: {st['lang']}, title: '{st['title']}')")
@@ -374,7 +378,7 @@ async def main():
     sub_title_meta: list[str] = []
     out_sub_idx = 0
     for st in sub_tracks:
-        if st.get("codec", "").lower() in PGS_CODECS:
+        if _is_pgs(st.get("codec", "")):
             continue   # skipped stream — doesn't consume an output slot
         lang_name = lang_code_to_name(st["lang"])
         sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
@@ -517,8 +521,11 @@ async def main():
         # 7. POST-PROCESSING (Remux)
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
         fixed_file = f"FIXED_{config.FILE_NAME}"
+        mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
         subprocess.run([
-            "mkvmerge", "-o", fixed_file, config.FILE_NAME,
+            "mkvmerge", "-o", fixed_file,
+            *mkvmerge_title_args,
+            config.FILE_NAME,
             "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
         ])
         if os.path.exists(fixed_file):
