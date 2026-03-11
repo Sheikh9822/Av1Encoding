@@ -214,12 +214,15 @@ async def main():
 
     # 3. RENAME — build structured output filename if ANIME_NAME is set
     if config.ANIME_NAME and config.ANIME_NAME.strip():
+        # Use the user's chosen resolution for the quality label in the filename.
+        # USER_RES is e.g. "720" when the user picked 720p; empty = Original (use source height).
+        rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
         resolved_name, audio_type_label, audio_tracks, sub_tracks = resolve_output_name(
             source               = config.SOURCE,
             anime_name           = config.ANIME_NAME,
             season               = config.SEASON,
             episode              = config.EPISODE,
-            height               = height,
+            height               = rename_height,
             audio_type_override  = config.AUDIO_TYPE,
             content_type         = config.CONTENT_TYPE,
         )
@@ -256,11 +259,16 @@ async def main():
     # -- SVT-AV1 PARAMETERS --
     # pin=0 is required for GitHub Actions (virtualized VMs don't honour CPU affinity).
     # Without it SVT-AV1 tries to pin threads to specific cores and hangs indefinitely.
-    svtav1_tune = "tune=0:film-grain=0:enable-overlays=1:aq-mode=1:pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
+    # Film grain — use the user's setting, clamped to valid SVT-AV1 range (0–50)
+    try:
+        grain_val = max(0, min(50, int(config.USER_GRAIN or 0)))
+    except (ValueError, TypeError):
+        grain_val = 0
+    svtav1_tune = f"tune=0:film-grain={grain_val}:enable-overlays=1:aq-mode=1:pin=0:lp=8:tile-columns=2:tile-rows=1:la-depth=60"
 
     # UI Labels
     hdr_label      = "HDR10" if is_hdr else "SDR"
-    grain_label    = " | Grain: 0"
+    grain_label    = f" | Grain: {grain_val}"
     crop_label_txt = " | Cropped" if crop_val else ""
 
     # -- DEMO / PARTIAL ENCODE --
