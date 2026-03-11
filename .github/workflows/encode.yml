@@ -52,6 +52,12 @@ on:
       audio_tracks:
         description: 'Audio Track Labels'
         default: ''
+      demo_start:
+        description: 'Demo Start (seconds or HH:MM:SS, e.g. 120 or 00:02:00)'
+        default: '0'
+      demo_duration:
+        description: 'Demo Duration in seconds (leave blank for full encode)'
+        default: ''
 
 permissions:
   actions: write
@@ -270,6 +276,8 @@ jobs:
           CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           SUB_TRACKS: ${{ github.event.inputs.sub_tracks }}
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
+          DEMO_START: ${{ github.event.inputs.demo_start }}
+          DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: python3 main.py
 
