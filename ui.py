@@ -49,6 +49,18 @@ def get_failure_ui(file_name, error_snippet):
         f"└────────────────────────────────────┘</code>"
     )
 
+
+def get_cancelled_ui(file_name, elapsed_str):
+    return (
+        f"<code>┌─── 🛑 [ MISSION.CANCELLED ] ───────┐\n"
+        f"│                                    \n"
+        f"│ 📂 FILE: {file_name}\n"
+        f"│ ⏱ ELAPSED: {elapsed_str}\n"
+        f"│                                    \n"
+        f"│ 🚫 STATUS: Encode aborted by user. \n"
+        f"└────────────────────────────────────┘</code>"
+    )
+
 def get_download_ui(percent, speed, size_mb, elapsed, eta):
     bar = generate_progress_bar(percent)
     return (
