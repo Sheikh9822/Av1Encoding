@@ -539,9 +539,12 @@ async def main():
             "demo_start":         demo_start,
             "audio_tracks":       audio_tracks,
             "sub_tracks":         sub_tracks,
+            "file_name":          config.FILE_NAME,
         }
         with open("encode_results.json", "w") as f:
             json.dump(encode_results, f)
+        with open("output_fname.txt", "w") as f:
+            f.write(config.FILE_NAME)
 
         await tg_edit(
             tg_state, tg_ready,

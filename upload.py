@@ -184,9 +184,16 @@ async def main():
     with open("encode_results.json") as f:
         r = json.load(f)
 
-    # Override FILE_NAME with the actual renamed output from encode phase
-    if r.get("file_name"):
+    # Resolve final filename — output_fname.txt is the most reliable source,
+    # encode_results.json["file_name"] is the fallback, env var is last resort.
+    if os.path.exists("output_fname.txt"):
+        config.FILE_NAME = open("output_fname.txt").read().strip()
+        print(f"[upload] FILE_NAME from output_fname.txt: {config.FILE_NAME}")
+    elif r.get("file_name"):
         config.FILE_NAME = r["file_name"]
+        print(f"[upload] FILE_NAME from encode_results.json: {config.FILE_NAME}")
+    else:
+        print(f"[upload] FILE_NAME from env/config: {config.FILE_NAME}")
 
     duration            = r["duration"]
     width               = r["width"]
@@ -342,7 +349,7 @@ async def main():
         try: await status.delete()
         except: pass
         for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE,
-                  config.SCREENSHOT, "encode_results.json"]:
+                  config.SCREENSHOT, "encode_results.json", "output_fname.txt"]:
             if os.path.exists(f):
                 os.remove(f)
 
