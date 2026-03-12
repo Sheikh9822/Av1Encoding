@@ -194,14 +194,7 @@ jobs:
             echo "❌ ERROR: Magnet links are disabled." | tee download.log && exit 1
           else
             if [ -z "$CUSTOM" ]; then
-              # Check filename= or file= query param first (CDN/signed URLs)
-              CLEAN_NAME=$(echo "$URL" | grep -oP '(?<=[?&]filename=)[^&]+' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null)
-              if [ -z "$CLEAN_NAME" ]; then
-                CLEAN_NAME=$(echo "$URL" | grep -oP '(?<=[?&]file=)[^&]+' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null)
-              fi
-              if [ -z "$CLEAN_NAME" ]; then
-                CLEAN_NAME=$(python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(urllib.parse.urlparse(sys.argv[1]).path.split('/')[-1]))" "$URL")
-              fi
+              CLEAN_NAME=$(python3 resolve_filename.py "$URL" 2>/dev/null)
               if [[ "$CLEAN_NAME" != *.mkv ]] && [[ "$CLEAN_NAME" != *.mp4 ]] && [[ "$CLEAN_NAME" != *.webm ]]; then
                 FN="${CLEAN_NAME}.mkv"
               else
