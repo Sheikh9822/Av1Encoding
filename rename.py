@@ -130,17 +130,85 @@ def build_output_name(
     audio_type:   str,
     content_type: str = "Anime",
     ext:          str = "mkv",
+    is_special:   bool = False,
 ) -> str:
     """
     Assemble the final filename.
 
-    Format:  [Anime] [S02-E07] Anime Name [1080p] [Dual].mkv
+    Normal:   [S02-E07] Anime Name [1080p] [Dual].mkv
+    Special:  [S01-SP03] Anime Name [1080p] [Sub].mkv
     """
-    safe_name    = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
-    season_str   = f"S{int(season):02d}"
-    episode_str  = f"E{int(episode):02d}"
+    safe_name   = re.sub(r'[<>:"/\\|?*\n\r\t]', "", anime_name).strip()
+    season_str  = f"S{int(season):02d}"
+    ep_prefix   = "SP" if is_special else "E"
+    episode_str = f"{ep_prefix}{int(episode):02d}"
 
     return f"[{season_str}-{episode_str}] {safe_name} [{quality}] [{audio_type}].{ext}"
+
+
+# ---------------------------------------------------------------------------
+# ANITOPY FILENAME PARSER
+# ---------------------------------------------------------------------------
+
+def parse_from_filename(raw_filename: str) -> dict | None:
+    """
+    Run anitopy on *raw_filename* and return a structured dict:
+        {
+            "anime_name": str,
+            "season":     int,
+            "episode":    int,
+            "is_special": bool,
+        }
+    Returns None if anitopy can't extract a title.
+
+    Handles:
+      - Standard episodes:  [SubsPlease] Medalist - 07 (1080p).mkv
+      - Seasonal:           Shingeki no Kyojin S3 - 12 [720p].mkv
+      - Specials/OVA:       Oshi no Ko - 01 OVA [BDRip].mkv
+      - S01E04 format:      [Ember] Dungeon Meshi - S01E04 [1080p].mkv
+      - URL-decoded CDN:    Imouto Sae Ireba Ii. - 12.mkv
+      - Greek suffixes:     Steins;Gate 0 - 23β.mkv  (β kept intact)
+    """
+    try:
+        import anitopy
+        p = anitopy.parse(raw_filename)
+    except Exception as e:
+        print(f"[rename] anitopy failed on {raw_filename!r}: {e}")
+        return None
+
+    anime_name = p.get("anime_title", "").strip()
+    if not anime_name:
+        return None
+
+    # Season — default 1 if not present
+    raw_season = p.get("anime_season", "1") or "1"
+    try:
+        season = int(str(raw_season).strip())
+    except ValueError:
+        season = 1
+
+    # Episode — default 1 if not present
+    raw_ep = p.get("episode_number", "1") or "1"
+    # anitopy may return "23β" or "01-12" — take leading digits
+    ep_digits = re.match(r"\d+", str(raw_ep).strip())
+    episode = int(ep_digits.group()) if ep_digits else 1
+
+    # Special flag: OVA / ONA / SP / Special in episode_type or anime_type
+    special_keywords = {"ova", "ona", "sp", "special", "movie"}
+    ep_type    = str(p.get("episode_type",  "") or "").lower()
+    anime_type = str(p.get("anime_type",    "") or "").lower()
+    is_special = bool(special_keywords & {ep_type, anime_type})
+
+    print(
+        f"[rename] anitopy → {anime_name!r}  "
+        f"S{season:02d}{'SP' if is_special else 'E'}{episode:02d}"
+    )
+    return {
+        "anime_name": anime_name,
+        "season":     season,
+        "episode":    episode,
+        "is_special": is_special,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +271,7 @@ def resolve_output_name(
     ext:                  str = "mkv",
     audio_type_override:  str = "Auto",
     content_type:         str = "Anime",
+    is_special:           bool = False,
 ) -> tuple[str, str, list[dict], list[dict]]:
     """
     One-call helper used by main.py.
@@ -217,7 +286,10 @@ def resolve_output_name(
         audio_type = detect_audio_type(audio_tracks)
 
     quality  = detect_quality(height)
-    filename = build_output_name(anime_name, season, episode, quality, audio_type, content_type, ext)
+    filename = build_output_name(
+        anime_name, season, episode, quality, audio_type,
+        content_type, ext, is_special=is_special,
+    )
     return filename, audio_type, audio_tracks, sub_tracks
 
 

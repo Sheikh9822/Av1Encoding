@@ -260,34 +260,42 @@ async def main():
     # If ANIME_NAME is blank, attempt to auto-parse it from the source URL's
     # filename= query param (or path) using anitopy as a fallback.
     anime_name = config.ANIME_NAME.strip() if config.ANIME_NAME else ""
+    is_special = False
 
     if not anime_name:
-        # Try to extract a filename from the source URL for anitopy to parse
-        try:
-            from urllib.parse import urlparse, parse_qs, unquote
-            import anitopy
+        # ── Auto-detect from filename (anitopy) ────────────────────────────
+        # Priority: FILE_NAME (Content-Disposition) → VIDEO_URL query param → URL path
+        from urllib.parse import urlparse, parse_qs, unquote
+        from rename import parse_from_filename
 
-            parsed_url = urlparse(config.SOURCE)
-            qs = parse_qs(parsed_url.query)
+        raw_filename = ""
 
-            # Prefer explicit filename= or file= param (CDN signed URLs)
-            raw_filename = (
-                qs.get("filename", [None])[0]
-                or qs.get("file",     [None])[0]
-                or unquote(parsed_url.path.split("/")[-1])
-            )
+        # Best source: filename resolved by resolve_filename.py in the workflow
+        if config.FILE_NAME and any(c.isalpha() for c in config.FILE_NAME):
+            raw_filename = config.FILE_NAME
 
-            if raw_filename:
-                aniparse = anitopy.parse(raw_filename)
-                anime_name   = aniparse.get("anime_title", "").strip()
-                if not config.SEASON or not config.SEASON.strip():
-                    config.SEASON  = str(aniparse.get("anime_season",  "1") or "1")
-                if not config.EPISODE or not config.EPISODE.strip():
-                    config.EPISODE = str(aniparse.get("episode_number", "1") or "1")
-                if anime_name:
-                    print(f"[rename] anitopy auto-detected → {anime_name}  S{config.SEASON}E{config.EPISODE}")
-        except Exception as e:
-            print(f"[rename] anitopy fallback failed: {e}")
+        # Fallback: extract from VIDEO_URL query param / path
+        if not raw_filename:
+            source_url = os.getenv("VIDEO_URL", "")
+            if source_url:
+                qs = parse_qs(urlparse(source_url).query)
+                raw_filename = (
+                    qs.get("filename", [None])[0]
+                    or qs.get("file",     [None])[0]
+                    or unquote(urlparse(source_url).path.split("/")[-1])
+                    or ""
+                )
+
+        if raw_filename:
+            parsed = parse_from_filename(raw_filename)
+            if parsed:
+                anime_name = parsed["anime_name"]
+                is_special = parsed["is_special"]
+                # Only override season/episode if bridge didn't send explicit values
+                if not config.SEASON or not config.SEASON.strip() or config.SEASON == "1":
+                    config.SEASON  = str(parsed["season"])
+                if not config.EPISODE or not config.EPISODE.strip() or config.EPISODE == "1":
+                    config.EPISODE = str(parsed["episode"])
 
     if anime_name:
         rename_height = int(config.USER_RES) if (config.USER_RES and config.USER_RES.strip().isdigit()) else height
@@ -299,6 +307,7 @@ async def main():
             height               = rename_height,
             audio_type_override  = config.AUDIO_TYPE,
             content_type         = config.CONTENT_TYPE,
+            is_special           = is_special,
         )
         config.FILE_NAME = resolved_name
         print(f"[rename] Output → {resolved_name}  |  Audio: {audio_type_label}")
