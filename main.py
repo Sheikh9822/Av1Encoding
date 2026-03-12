@@ -391,34 +391,101 @@ async def main():
 
     # 5. ENCODING EXECUTION (starts immediately, does not wait for TG)
 
-    # -- PGS SUBTITLE EXCLUSION --
-    # PGS (hdmv_pgs_bitmap / pgssub) are image-based bitmap subtitles.
-    # They inflate file size significantly and are dropped from the output.
-    # We identify them by their subtitle-stream-relative index (0-based within
-    # the subtitle stream list) and inject -map -0:s:N exclusions into ffmpeg.
-    # Detection is format-based: any codec name containing "pgs" is matched,
-    # covering hdmv_pgs_subtitle, hdmv_pgs_bitmap, pgssub, and any future variants.
+    # -- PGS → SRT OCR CONVERSION --
+    # PGS (hdmv_pgs_bitmap / pgssub) are bitmap image subtitles — large and
+    # uneditable. We OCR them to SRT using pgsrip+tesseract, then mux the
+    # resulting text tracks in place of the originals.
+    # If OCR fails for any track, that track is silently dropped (same as before).
+
     def _is_pgs(codec: str) -> bool:
         return "pgs" in codec.lower()
 
-    pgs_exclusions: list[str] = []
+    def _ocr_pgs_track(sub_idx: int, lang: str) -> str | None:
+        """
+        Extract PGS stream at subtitle index sub_idx from source.mkv,
+        OCR it with pgsrip, return path to .srt file or None on failure.
+        """
+        sup_path = f"pgs_track_{sub_idx}.sup"
+        srt_path = f"pgs_track_{sub_idx}.srt"
+        try:
+            # Extract the raw .sup (PGS) stream
+            extract = subprocess.run(
+                ["mkvextract", config.SOURCE, "tracks", f"{sub_idx}:{sup_path}"],
+                capture_output=True, text=True, timeout=120
+            )
+            if extract.returncode != 0 or not os.path.exists(sup_path):
+                print(f"[pgs] mkvextract failed for s:{sub_idx}: {extract.stderr[:200]}")
+                return None
+
+            # OCR with pgsrip — auto-detects language from lang code
+            # tesseract language pack: jpn, eng, ara, etc.
+            tess_lang = lang if lang not in ("und", "") else "eng"
+            ocr = subprocess.run(
+                ["pgsrip", "-l", tess_lang, "-o", srt_path, sup_path],
+                capture_output=True, text=True, timeout=300
+            )
+            if ocr.returncode != 0 or not os.path.exists(srt_path):
+                print(f"[pgs] pgsrip OCR failed for s:{sub_idx}: {ocr.stderr[:200]}")
+                return None
+
+            size = os.path.getsize(srt_path)
+            print(f"[pgs] OCR done s:{sub_idx} lang={tess_lang} → {srt_path} ({size} bytes)")
+            return srt_path
+
+        except Exception as e:
+            print(f"[pgs] OCR error for s:{sub_idx}: {e}")
+            return None
+        finally:
+            # Clean up extracted .sup regardless of outcome
+            try:
+                os.remove(sup_path)
+            except Exception:
+                pass
+
+    # Build per-track mappings
+    pgs_exclusions: list[str] = []    # -map -0:s:N for each PGS track
+    ocr_inputs:     list[str] = []    # -i pgs_track_N.srt  for each OCR'd track
+    ocr_maps:       list[str] = []    # -map N:s  for each OCR'd input
+    ocr_meta:       list[str] = []    # -metadata:s:s:N title=... for OCR'd tracks
+    ocr_srt_files:  list[str] = []    # paths to clean up after encode
+
+    # Count non-PGS subs first (they get the first output slots)
+    non_pgs_count = sum(1 for st in sub_tracks if not _is_pgs(st.get("codec", "")))
+    ocr_out_idx   = non_pgs_count    # OCR tracks start after native text tracks
+
     for sub_idx, st in enumerate(sub_tracks):
-        if _is_pgs(st.get("codec", "")):
-            pgs_exclusions += ["-map", f"-0:s:{sub_idx}"]
-            print(f"[encode] Dropping PGS subtitle stream #s:{sub_idx} "
-                  f"(codec: {st['codec']}, lang: {st['lang']}, title: '{st['title']}')")
+        if not _is_pgs(st.get("codec", "")):
+            continue
+
+        print(f"[pgs] PGS track s:{sub_idx} (lang: {st['lang']}, title: '{st['title']}') — OCR starting...")
+        srt_path = _ocr_pgs_track(sub_idx, st["lang"])
+
+        # Always exclude the original PGS stream from output
+        pgs_exclusions += ["-map", f"-0:s:{sub_idx}"]
+
+        if srt_path:
+            # Input index in ffmpeg: 1-based after the main source (input 0)
+            ffmpeg_input_idx = 1 + len(ocr_inputs) // 2
+            ocr_inputs += ["-i", srt_path]
+            ocr_maps   += ["-map", f"{ffmpeg_input_idx}:s"]
+            lang_name   = lang_code_to_name(st["lang"]) + " (Signs)"
+            ocr_meta   += [f"-metadata:s:s:{ocr_out_idx}", f"title={lang_name}"]
+            ocr_srt_files.append(srt_path)
+            print(f"[pgs] OCR track will be output as s:{ocr_out_idx} title='{lang_name}'")
+            ocr_out_idx += 1
+        else:
+            print(f"[pgs] s:{sub_idx} OCR failed — track dropped")
+
     if pgs_exclusions:
-        print(f"[encode] {len(pgs_exclusions)//2} PGS track(s) excluded from output.")
+        print(f"[encode] {len(pgs_exclusions)//2} PGS track(s) → {len(ocr_srt_files)} OCR'd to SRT")
 
     # -- SUBTITLE TITLE RENAME --
-    # Set each kept (non-PGS) subtitle track's title to its language name
-    # e.g. "jpn" -> "Japanese", "eng" -> "English".
-    # Uses output-stream-relative index (0-based among kept subtitle streams).
+    # Set each kept native (non-PGS) subtitle track's title to its language name.
     sub_title_meta: list[str] = []
     out_sub_idx = 0
     for st in sub_tracks:
         if _is_pgs(st.get("codec", "")):
-            continue   # skipped stream — doesn't consume an output slot
+            continue
         lang_name = lang_code_to_name(st["lang"])
         sub_title_meta += [f"-metadata:s:s:{out_sub_idx}", f"title={lang_name}"]
         print(f"[encode] Subtitle #s:{out_sub_idx} title set to '{lang_name}' (lang: {st['lang']})")
@@ -429,10 +496,12 @@ async def main():
         # Input-side seeking (fast; placed BEFORE -i)
         *([ "-ss", demo_start, "-t", demo_duration ] if demo_mode else []),
         "-i", config.SOURCE,
+        *ocr_inputs,              # -i pgs_track_N.srt for each OCR'd PGS track
         "-map", "0:v:0",
         "-map", "0:a?",
         "-map", "0:s?",
-        *pgs_exclusions,          # drop any PGS subtitle streams
+        *pgs_exclusions,          # exclude original PGS streams
+        *ocr_maps,                # map OCR'd SRT inputs as subtitle streams
         *video_filters,
         "-c:v", "libsvtav1",
         "-pix_fmt", "yuv420p10le",
@@ -441,8 +510,9 @@ async def main():
         "-svtav1-params", svtav1_tune,
         "-threads", "0",
         *audio_cmd,
-        *sub_title_meta,          # rename subtitle titles to language names
-        "-c:s", "copy",
+        *sub_title_meta,          # rename native subtitle titles
+        *ocr_meta,                # rename OCR'd subtitle titles (e.g. "Japanese (Signs)")
+        "-c:s", "copy",           # OCR SRT tracks are already text — copy is fine
         "-map_chapters", "0",
         "-progress", "pipe:1",
         "-nostats",
@@ -667,7 +737,7 @@ async def main():
         # CLEANUP
         try: await status.delete()
         except: pass
-        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT]:
+        for f in [config.SOURCE, config.FILE_NAME, config.LOG_FILE, config.SCREENSHOT, *ocr_srt_files]:
             if os.path.exists(f): os.remove(f)
 
     except Exception as exc:

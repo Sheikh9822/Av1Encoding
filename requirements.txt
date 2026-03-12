@@ -3,3 +3,5 @@ tgcrypto
 yt-dlp
 psutil
 anitopy
+aiohttp
+pgsrip
