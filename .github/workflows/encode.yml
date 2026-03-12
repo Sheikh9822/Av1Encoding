@@ -98,9 +98,9 @@ jobs:
           else
             echo "📥 Installing apt tools..."
             # Official MKVToolNix repo — Ubuntu apt ships an old version missing libmatroska.so.7
-            sudo apt-get install -y gnupg wget curl
-            wget -q https://mkvtoolnix.download/gpg-pub-myriam.asc -O /tmp/mkvtoolnix.asc
-            sudo gpg --dearmor -o /usr/share/keyrings/mkvtoolnix.gpg /tmp/mkvtoolnix.asc
+            sudo apt-get install -y curl
+            # Key is served as pre-dearmored .gpg (not .asc) — no gpg --dearmor needed
+            sudo curl -fsSL https://mkvtoolnix.download/gpg-pub-myriam.gpg -o /usr/share/keyrings/mkvtoolnix.gpg
             echo "deb [arch=amd64 signed-by=/usr/share/keyrings/mkvtoolnix.gpg] https://mkvtoolnix.download/ubuntu/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/mkvtoolnix.list
             sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra
             # Cache entire /usr/bin and /usr/lib entries for installed tools
