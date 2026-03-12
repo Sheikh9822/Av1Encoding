@@ -101,7 +101,7 @@ jobs:
             sudo ldconfig
           else
             echo "📥 Installing apt tools..."
-            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl
+            sudo apt-get update && sudo apt-get install -y aria2 mkvtoolnix curl tesseract-ocr tesseract-ocr-jpn tesseract-ocr-eng
             mkdir -p /tmp/apt-cache/bin /tmp/apt-cache/lib
             cp $(which aria2c) /tmp/apt-cache/bin/
             cp $(which mkvmerge) /tmp/apt-cache/bin/
@@ -252,6 +252,10 @@ jobs:
           AUDIO_TRACKS: ${{ github.event.inputs.audio_tracks }}
           DEMO_START: ${{ github.event.inputs.demo_start }}
           DEMO_DURATION: ${{ github.event.inputs.demo_duration }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+          ANIDB_USER: ${{ secrets.ANIDB_USER }}
+          ANIDB_PASS: ${{ secrets.ANIDB_PASS }}
+          TRACEMOE_API_KEY: ${{ secrets.TRACEMOE_API_KEY }}
           FILE_NAME: ${{ needs.download_phase.outputs.final_name }}
         run: |
           set -o pipefail
