@@ -561,14 +561,19 @@ async def main():
             await tg_notify_failure(tg_state, tg_ready, config.FILE_NAME, error_snippet)
             return
 
-        # 7. POST-PROCESSING (set container title in-place — no remux needed)
+        # 7. POST-PROCESSING (Remux)
         await tg_edit(tg_state, tg_ready, "<b>[ SYSTEM.OPTIMIZE ] Finalizing Metadata...</b>")
-        if config.ENCODER_TITLE.strip():
-            subprocess.run([
-                "mkvpropedit", config.FILE_NAME,
-                "--edit", "info",
-                "--set", f"title={config.ENCODER_TITLE}",
-            ], capture_output=True)
+        fixed_file = f"FIXED_{config.FILE_NAME}"
+        mkvmerge_title_args = ["--title", config.ENCODER_TITLE] if config.ENCODER_TITLE.strip() else []
+        subprocess.run([
+            "mkvmerge", "-o", fixed_file,
+            *mkvmerge_title_args,
+            config.FILE_NAME,
+            "--no-video", "--no-audio", "--no-subtitles", "--no-attachments", config.SOURCE
+        ])
+        if os.path.exists(fixed_file):
+            os.remove(config.FILE_NAME)
+            os.rename(fixed_file, config.FILE_NAME)
 
         # 8. METRICS + CLOUD UPLOAD (concurrent)
         final_size = os.path.getsize(config.FILE_NAME) / (1024 * 1024)
