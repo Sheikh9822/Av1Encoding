@@ -79,7 +79,9 @@ jobs:
         id: pip-cache
         uses: actions/cache@v4
         with:
-          path: ~/.local/lib/python3.10/site-packages
+          path: |
+            ~/.local/lib/python3.10/site-packages
+            ~/.local/bin
           key: pip-packages-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       - name: 📦 Cache APT Tools
@@ -110,7 +112,14 @@ jobs:
             pip install --user -r requirements.txt pyrogram tgcrypto yt-dlp
           else
             echo "📦 Python packages restored from cache."
+            # Verify critical binaries are available after cache restore
+            if ! command -v yt-dlp &>/dev/null; then
+              echo "⚠️ yt-dlp binary missing from cache, reinstalling..."
+              pip install --user yt-dlp
+            fi
           fi
+          # Ensure ~/.local/bin is on PATH for current and subsequent steps
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: 📦 Cache FFmpeg Binary
         id: ffmpeg-cache
