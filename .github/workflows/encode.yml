@@ -211,6 +211,7 @@ jobs:
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           CUSTOM: ${{ github.event.inputs.custom_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
         run: |
           set -eo pipefail
           URL="${{ github.event.inputs.video_url }}"
@@ -248,10 +249,32 @@ jobs:
             fi
 
             echo "📡 Streaming URL detected — using yt-dlp"
+
+            # GitHub Actions IPs are flagged by YouTube's web player bot-check.
+            # Using ios+mweb clients bypasses both the JS runtime requirement
+            # and the "Sign in to confirm you're not a bot" error entirely.
+            # For non-YouTube URLs these flags are a no-op.
+            YT_EXTRA_ARGS=""
+            if [[ "$URL" == *youtube.com* ]] || [[ "$URL" == *youtu.be* ]]; then
+              YT_EXTRA_ARGS="--extractor-args youtube:player_client=ios,mweb --no-check-certificates"
+              echo "🎯 YouTube detected — using iOS/mweb client (bypasses bot check)"
+            fi
+
+            # Optional: stored YouTube cookies (secret: YT_COOKIES_B64)
+            # Export youtube.com cookies as Netscape format, base64-encode the file,
+            # and store it as a repo secret named YT_COOKIES_B64 for extra reliability.
+            COOKIE_ARG=""
+            if [ -n "$YT_COOKIES_B64" ]; then
+              echo "$YT_COOKIES_B64" | base64 -d > /tmp/yt_cookies.txt
+              COOKIE_ARG="--cookies /tmp/yt_cookies.txt"
+              echo "🍪 YouTube cookies loaded from secret"
+            fi
+
             yt-dlp \
+              $YT_EXTRA_ARGS \
+              $COOKIE_ARG \
               --downloader aria2c \
               --downloader-args "aria2c:-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=10 --retry-wait=5 --max-tries=10" \
-              --user-agent "Mozilla/5.0" \
               --merge-output-format mkv \
               -o "source.mkv" \
               "$URL" 2>&1 | tee download.log
